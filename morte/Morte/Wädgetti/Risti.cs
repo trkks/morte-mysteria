@@ -44,7 +44,7 @@ namespace Morte.Wädgetti
 
         public Risti() : base(Game.LoadImage("risti-pysty"))
         {
-            Sfx = Game.LoadSoundEffect("syke").CreateSound();
+            Sfx = Game.LoadSoundEffect("syke.mp3").CreateSound();
             Sfx.IsLooped = true;
             
             Palkki = new PeliObjekti(Game.LoadImage("risti-vaaka"))

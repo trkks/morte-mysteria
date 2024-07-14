@@ -8,7 +8,6 @@ using Morte;
 
 namespace Program
 {
-#if WINDOWS || LINUX
     /// <summary>
     /// The main class.
     /// </summary>
@@ -24,5 +23,4 @@ namespace Program
                 game.Run();
         }
     }
-#endif
 }

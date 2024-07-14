@@ -267,3 +267,7 @@ morte/Content/~veripisara.png
 /www/foo.json
 /morte/Assets
 /www/morte-mysteria-ec1d52969612.json
+
+# 3rd-party and build dirs used in hacked-together container-built attempts to get the project running.
+include/
+out/
