@@ -2,7 +2,7 @@
 using System.Diagnostics;
 using Jypeli;
 
-//using WForms = System.Windows.Forms;
+using WForms = System.Windows.Forms;
 
 namespace Morte.Wädgetti
 {
@@ -90,7 +90,7 @@ namespace Morte.Wädgetti
             if (!_NormaaliKursori)
             {
                 Debug.WriteLine("Vaihdetaan normaali kursori.");
-                //WForms.Cursor.Show();
+                WForms.Cursor.Show();
                 _NormaaliKursori = true;
             }
 
@@ -105,7 +105,7 @@ namespace Morte.Wädgetti
             if (_NormaaliKursori)
             {
                 Debug.WriteLine("Piilotetaan normaali kursori");
-                //WForms.Cursor.Hide();
+                WForms.Cursor.Hide();
                 _NormaaliKursori = false;
             }
 

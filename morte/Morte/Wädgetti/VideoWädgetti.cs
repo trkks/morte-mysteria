@@ -37,14 +37,14 @@ namespace Morte.Wädgetti
         /// </remarks>
         public double Päättyminen = 1.5;
 
-        public bool IsLooped { get => false/*VideoPlayer.IsLooped*/; set {} /*VideoPlayer.IsLooped = value*/ }
-        public double Volume { get => 0.0/*VideoPlayer.Volume*/; set {}/*VideoPlayer.Volume = (float) value*/ }
+        public bool IsLooped { get => VideoPlayer.IsLooped; set => VideoPlayer.IsLooped = value; }
+        public double Volume { get => VideoPlayer.Volume; set => VideoPlayer.Volume = (float) value; }
 
         public bool IsPlaying
         {
             get
             {
-                return false; //VideoPlayer.State != XNAMedia.MediaState.Playing;
+                return VideoPlayer.State != XNAMedia.MediaState.Playing;
             }
         }
 
@@ -56,13 +56,13 @@ namespace Morte.Wädgetti
         {
             set
             {
-                //Video = Game.Content.Load<XNAMedia.Video>(value);
+                Video = Game.Content.Load<XNAMedia.Video>(value);
             }
         }
 
-        //protected XNAMedia.VideoPlayer VideoPlayer = new XNAMedia.VideoPlayer();
+        protected XNAMedia.VideoPlayer VideoPlayer = new XNAMedia.VideoPlayer();
 
-        //public XNAMedia.Video Video;
+        public XNAMedia.Video Video;
 
         private XNATexture2D videoTexture;
 
@@ -71,7 +71,7 @@ namespace Morte.Wädgetti
         public VideoWädgetti(double width, double height) : base(width, height)
         {
             IsUpdated = true;
-            //Destroyed += VideoPlayer.Dispose;
+            Destroyed += VideoPlayer.Dispose;
             AddedToGame += delegate () {
                 Game.Mouse.ListenOn(this, MouseButton.Left, ButtonState.Released, OnKlikattaessa, null).InContext(this);
                 Play();
@@ -84,7 +84,6 @@ namespace Morte.Wädgetti
         public void Play()
         {
             State = XNAMedia.MediaState.Playing;
-            /*
             if (VideoPlayer.State == XNAMedia.MediaState.Stopped)
             {
                 Debug.WriteLine("Käynnistetään video");
@@ -109,14 +108,13 @@ namespace Morte.Wädgetti
                 VideoPlayer.Resume();
                 OnPlay?.Invoke();
             }
-            */
 
         }
 
         public void Pause()
         {
             State = XNAMedia.MediaState.Paused;
-            //VideoPlayer.Pause();
+            VideoPlayer.Pause();
             OnPause?.Invoke();
         }
 
@@ -124,12 +122,12 @@ namespace Morte.Wädgetti
         {
             State = XNAMedia.MediaState.Stopped;
             Debug.WriteLine("VideoWädgetti.Stop()");
-            //if (VideoPlayer.State != XNAMedia.MediaState.Stopped)
-            //{
-            //    VideoPlayer.Stop();
-            //    VideoPlayer.Dispose();
-            //    OnStop?.Invoke();
-            //}
+            if (VideoPlayer.State != XNAMedia.MediaState.Stopped)
+            {
+                VideoPlayer.Stop();
+                VideoPlayer.Dispose();
+                OnStop?.Invoke();
+            }
 
             base.Stop();
         }
@@ -138,7 +136,7 @@ namespace Morte.Wädgetti
         {
             XNATexture2D _videoTexture = null;
 
-            if (State == XNAMedia.MediaState.Playing /*&& VideoPlayer.State == XNAMedia.MediaState.Stopped*/)
+            if (State == XNAMedia.MediaState.Playing && VideoPlayer.State == XNAMedia.MediaState.Stopped)
             {
                 /// Video saapunut loppuun.
                 OnStop?.Invoke();
@@ -147,25 +145,25 @@ namespace Morte.Wädgetti
 
 
             // Kopioi videon data kuvaan.
-            //if (VideoPlayer.State != XNAMedia.MediaState.Stopped)
-            //    _videoTexture = VideoPlayer.GetTexture();
+            if (VideoPlayer.State != XNAMedia.MediaState.Stopped)
+                _videoTexture = VideoPlayer.GetTexture();
 
             if (_videoTexture != null && _videoTexture != videoTexture)
             {
                 videoTexture = _videoTexture;
-                //this.Image = new Image(videoTexture);
+                this.Image = new Image(videoTexture);
             }
 
             // Tarkasta onko päättymässä. Huomaa että tätä spämmätään.
-            //if(VideoPlayer.State == XNAMedia.MediaState.Playing)
-            //{
-            //    TimeSpan ennen = VideoPlayer.PlayPosition + TimeSpan.FromSeconds(Päättyminen);
+            if(VideoPlayer.State == XNAMedia.MediaState.Playing)
+            {
+                TimeSpan ennen = VideoPlayer.PlayPosition + TimeSpan.FromSeconds(Päättyminen);
 
-            //    if(ennen > Video.Duration)
-            //    {
-            //        OnPäättymässä?.Invoke();
-            //    }
-            //}
+                if(ennen > Video.Duration)
+                {
+                    OnPäättymässä?.Invoke();
+                }
+            }
 
             base.Update(time);
         }

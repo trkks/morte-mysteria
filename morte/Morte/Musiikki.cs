@@ -25,18 +25,18 @@ namespace Morte
         
         public Musiikki()
         {
-            TaustaMusiikki = Game.LoadSoundEffect("music/bass.wma");
+            TaustaMusiikki = Game.LoadSoundEffect("music/bass");
 
             Äänitehosteet = new Dictionary<string, SoundEffect>
             {
-                { "Käärme", Game.LoadSoundEffect("music/Käärme.wma") },
-                { "Hullu", Game.LoadSoundEffect("music/Hullu.wma") },
-                { "Lokki", Game.LoadSoundEffect("music/Lokki.wma") },
-                { "Koura", Game.LoadSoundEffect("music/Koura.wma") },
+                { "Käärme", Game.LoadSoundEffect("music/Käärme") },
+                { "Hullu", Game.LoadSoundEffect("music/Hullu") },
+                { "Lokki", Game.LoadSoundEffect("music/Lokki") },
+                { "Koura", Game.LoadSoundEffect("music/Koura") },
             };
 
             Luupperi = new Timer();
-            Luupperi.Interval = 5;//TaustaMusiikki.Duration.Seconds + (TaustaMusiikki.Duration.Milliseconds / 1000);
+            Luupperi.Interval = TaustaMusiikki.Duration.Seconds + (TaustaMusiikki.Duration.Milliseconds / 1000);
             Luupperi.Timeout += ToistaAmbient;
 
         }

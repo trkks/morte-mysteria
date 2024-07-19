@@ -496,7 +496,7 @@ namespace Morte
 
             Camera.Position = IntroVideo.Position;
 
-            //IsMouseVisible = false;
+            IsMouseVisible = false;
 
             Add(IntroVideo, TASO_PAPPI);
 
@@ -538,7 +538,7 @@ namespace Morte
 
             Camera.Y = 0;
 
-            //IsMouseVisible = true;
+            IsMouseVisible = true;
             Game.SmoothTextures = true;
 
             PelinLataaja.Wait();
