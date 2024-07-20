@@ -118,7 +118,7 @@ namespace Morte.Wädgetti
             OnPause?.Invoke();
         }
 
-        public void Stop()
+        new public void Stop()
         {
             State = XNAMedia.MediaState.Stopped;
             Debug.WriteLine("VideoWädgetti.Stop()");

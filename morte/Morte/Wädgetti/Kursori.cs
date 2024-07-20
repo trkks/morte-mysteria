@@ -33,7 +33,7 @@ namespace Morte.Wädgetti
             }
         }
 
-        public bool IsVisible
+        new public bool IsVisible
         {
             get => base.IsVisible; set
             {
