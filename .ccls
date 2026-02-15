@@ -1,0 +1,6 @@
+gcc
+-std=c99
+-I./include
+-L./lib
+-lraylib
+-lm

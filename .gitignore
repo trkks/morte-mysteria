@@ -270,4 +270,8 @@ morte/Content/~veripisara.png
 
 # 3rd-party and build dirs used in hacked-together container-built attempts to get the project running.
 include/
+lib/
 out/
+
+# C language server cache.
+.ccls-cache/
