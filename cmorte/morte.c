@@ -2,6 +2,7 @@
  * Morte mysteria
  ********************************************************************************************/
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -13,6 +14,7 @@
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
+#define ANIMATION_LENGTH_MILLIS_CURSOR 750
 
 enum Tag { GROUND };
 
@@ -21,24 +23,67 @@ typedef struct {
   Rectangle level_bounds;
 } Level;
 
+enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
+
+enum AnimationTiming { LINEAR, EASE_IN, EASE_OUT };
+
 typedef struct {
-  Texture2D *frames;
+  enum AnimationState state;
   size_t frame_count;
   size_t current_frame;
+  unsigned length_millis;
+  unsigned elapsed_millis;
+  enum AnimationTiming timing;
+  Texture2D *frames;
 } Animation;
 
-void Animation__update(Animation *self) {
-  self->current_frame += 1;
-  self->current_frame %= self->frame_count;
+void Animation__update(Animation *self, float delta) {
+  if (self->state == STOPPED) {
+    return;
+  }
+
+  self->elapsed_millis += 1000 * delta;
+  float t =
+      fmin(1.0f, (float)self->elapsed_millis / (float)self->length_millis);
+
+  switch (self->timing) {
+  case LINEAR:
+    self->current_frame = t * self->frame_count;
+    break;
+  case EASE_IN:
+    self->current_frame = (1.0f - cosf(t * PI / 2.0f)) * self->frame_count;
+    break;
+  case EASE_OUT:
+    self->current_frame = sinf(t * PI / 2.0f) * self->frame_count;
+    break;
+  }
+
+  if (self->current_frame == self->frame_count) {
+    self->current_frame = 0;
+    self->elapsed_millis = 0;
+
+    if (self->state == PLAYING_ONCE) {
+      self->state = STOPPED;
+    }
+  }
 }
+
+void Animation__free(Animation *self) { free(self->frames); }
+
+typedef struct {
+  Vector2 position;
+  Animation animation;
+} Cursor;
 
 typedef struct {
   Level level;
   Vector2 gravity;
-  Animation cursor_animation;
+  Cursor cursor;
 } MorteGame;
 
-void MorteGame__free(MorteGame *self) { free(self->cursor_animation.frames); }
+void MorteGame__free(MorteGame *self) {
+  Animation__free(&self->cursor.animation);
+}
 
 MorteGame game;
 
@@ -56,9 +101,13 @@ int main(void) {
   load_content();
 
   while (!WindowShouldClose()) {
+    float delta = GetFrameTime();
+
     // Update.
     //----------------------------------------------------------------------------------
-    Animation__update(&game.cursor_animation);
+    game.cursor.position = GetMousePosition();
+
+    Animation__update(&game.cursor.animation, delta);
     //----------------------------------------------------------------------------------
 
     // Draw.
@@ -68,8 +117,8 @@ int main(void) {
     ClearBackground(BACKGROUND_COLOR);
 
     DrawTexture(
-        game.cursor_animation.frames[game.cursor_animation.current_frame],
-        GetMouseX(), GetMouseY(), WHITE);
+        game.cursor.animation.frames[game.cursor.animation.current_frame],
+        game.cursor.position.x, game.cursor.position.y, WHITE);
 
     EndDrawing();
     //----------------------------------------------------------------------------------
@@ -95,16 +144,23 @@ void initialize_level() {
 }
 
 void load_content() {
-  game.cursor_animation = (Animation){
-      .frames =
-          (Texture2D *)malloc(ANIMATION_FRAME_COUNT_CURSOR * sizeof(Texture2D)),
-      .frame_count = ANIMATION_FRAME_COUNT_CURSOR,
-      .current_frame = 0,
-  };
-  for (size_t i = 0; i < game.cursor_animation.frame_count; i++) {
+  game.cursor =
+      (Cursor){.position = {0, 0},
+               .animation = {
+                   .state = LOOPING,
+                   .frame_count = ANIMATION_FRAME_COUNT_CURSOR,
+                   .frames = (Texture2D *)malloc(ANIMATION_FRAME_COUNT_CURSOR *
+                                                 sizeof(Texture2D)),
+                   .current_frame = 0,
+                   .length_millis = ANIMATION_LENGTH_MILLIS_CURSOR,
+                   .elapsed_millis = 0,
+                   .timing = LINEAR,
+               }};
+
+  for (size_t i = 0; i < game.cursor.animation.frame_count; i++) {
     char *filename = (char *)malloc((25 + 2 + 4 + 1) * sizeof(char));
     sprintf(filename, "content/kursori/kursori00%02d.png", (int)i + 1);
-    game.cursor_animation.frames[i] = LoadTexture(filename);
+    game.cursor.animation.frames[i] = LoadTexture(filename);
     free(filename);
   }
 }
