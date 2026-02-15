@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "raylib/raylib.h"
 
@@ -12,6 +13,7 @@
 #define WINDOW_HEIGHT 400
 #define LEVEL_WIDTH 2200
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
+#define BACKGROUND_TEXTURE_COUNT 3
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
@@ -20,7 +22,7 @@ enum Tag { GROUND };
 
 typedef struct {
   enum Tag tag;
-  Rectangle level_bounds;
+  Rectangle bounds;
 } Level;
 
 enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
@@ -58,7 +60,7 @@ void Animation__update(Animation *self, float delta) {
     break;
   }
 
-  if (self->current_frame == self->frame_count) {
+  if (self->current_frame >= self->frame_count) {
     self->current_frame = 0;
     self->elapsed_millis = 0;
 
@@ -76,9 +78,15 @@ typedef struct {
 } Cursor;
 
 typedef struct {
+  Vector2 position;
+  Texture2D texture;
+} Background;
+
+typedef struct {
   Level level;
   Vector2 gravity;
   Cursor cursor;
+  Background backgrounds[BACKGROUND_TEXTURE_COUNT];
 } MorteGame;
 
 void MorteGame__free(MorteGame *self) {
@@ -116,6 +124,11 @@ int main(void) {
 
     ClearBackground(BACKGROUND_COLOR);
 
+    for (size_t i = 0; i < BACKGROUND_TEXTURE_COUNT; i++) {
+      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].position.x,
+                  game.backgrounds[i].position.y, WHITE);
+    }
+
     DrawTexture(
         game.cursor.animation.frames[game.cursor.animation.current_frame],
         game.cursor.position.x, game.cursor.position.y, WHITE);
@@ -137,7 +150,7 @@ int main(void) {
 void initialize_level() {
   game.level = (Level){
       .tag = GROUND,
-      .level_bounds = {0, 0, LEVEL_WIDTH, WINDOW_HEIGHT},
+      .bounds = {0, 0, LEVEL_WIDTH, WINDOW_HEIGHT},
   };
 
   game.gravity = (Vector2){0, -700};
@@ -163,4 +176,15 @@ void load_content() {
     game.cursor.animation.frames[i] = LoadTexture(filename);
     free(filename);
   }
+
+  game.backgrounds[0] =
+      (Background){.texture = LoadTexture("content/tausta/tausta-0.jpg"),
+                   .position = {0, 0}};
+  game.backgrounds[1] =
+      (Background){.texture = LoadTexture("content/tausta/tausta-1.png"),
+                   .position = {0, 0}};
+  Texture background2 = LoadTexture("content/tausta/edusta.png");
+  game.backgrounds[2] = (Background){
+      .texture = background2,
+      .position = {0, game.level.bounds.height - background2.height}};
 }
