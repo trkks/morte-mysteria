@@ -3,4 +3,4 @@ run: build
 
 build:
 	mkdir -p bin
-	gcc -o ./bin/morte cmorte/morte.c -std=c99 -I./include -L./lib -lraylib -lm
+	gcc -o bin/morte cmorte/morte.c -std=c99 -I./include -L./lib -lraylib -lm
