@@ -78,14 +78,21 @@ typedef struct {
 } Cursor;
 
 typedef struct {
-  Vector2 position;
+  Vector2 offset;
   Texture2D texture;
 } Background;
+
+typedef struct {
+  Vector2 position;
+  Texture texture;
+} Priest;
 
 typedef struct {
   Level level;
   Vector2 gravity;
   Cursor cursor;
+  Camera2D camera;
+  Priest player;
   Background backgrounds[BACKGROUND_TEXTURE_COUNT];
 } MorteGame;
 
@@ -116,6 +123,22 @@ int main(void) {
     game.cursor.position = GetMousePosition();
 
     Animation__update(&game.cursor.animation, delta);
+
+    if (IsKeyDown(KEY_D)) {
+      game.player.position.x += 2;
+      game.backgrounds[0].offset.x += 1.58f;
+      game.backgrounds[1].offset.x += 1.2f;
+    }
+    if (IsKeyDown(KEY_A)) {
+      game.player.position.x -= 2;
+      game.backgrounds[0].offset.x -= 1.58f;
+      game.backgrounds[1].offset.x -= 1.2f;
+    }
+
+    game.camera.target =
+        (Vector2){game.player.position.x + game.player.texture.width / 2,
+                  game.player.position.y + game.player.texture.height / 2};
+
     //----------------------------------------------------------------------------------
 
     // Draw.
@@ -124,10 +147,20 @@ int main(void) {
 
     ClearBackground(BACKGROUND_COLOR);
 
-    for (size_t i = 0; i < BACKGROUND_TEXTURE_COUNT; i++) {
-      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].position.x,
-                  game.backgrounds[i].position.y, WHITE);
+    BeginMode2D(game.camera);
+
+    for (size_t i = 0; i < 2; i++) {
+      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].offset.x,
+                  game.backgrounds[i].offset.y, WHITE);
     }
+
+    DrawTexture(game.player.texture, game.player.position.x,
+                game.player.position.y, WHITE);
+
+    DrawTexture(game.backgrounds[2].texture, game.backgrounds[2].offset.x,
+                game.backgrounds[2].offset.y, WHITE);
+
+    EndMode2D();
 
     DrawTexture(
         game.cursor.animation.frames[game.cursor.animation.current_frame],
@@ -177,14 +210,34 @@ void load_content() {
     free(filename);
   }
 
-  game.backgrounds[0] =
-      (Background){.texture = LoadTexture("content/tausta/tausta-0.jpg"),
-                   .position = {0, 0}};
-  game.backgrounds[1] =
-      (Background){.texture = LoadTexture("content/tausta/tausta-1.png"),
-                   .position = {0, 0}};
+  Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
+  game.player =
+      (Priest){.position =
+                   {
+                       game.level.bounds.width / 2,
+                       game.level.bounds.height - player_texture.height,
+                   },
+               .texture = player_texture};
+
+  game.camera = (Camera2D){
+      .target = {game.player.position.x + player_texture.width / 2,
+                 game.player.position.y + player_texture.height / 2},
+      .offset = {WINDOW_WIDTH / 2, WINDOW_HEIGHT - player_texture.height / 2},
+      .rotation = 0.0f,
+      .zoom = 1.0f,
+  };
+
+  Texture background0 = LoadTexture("content/tausta/tausta-0.jpg");
+  game.backgrounds[0] = (Background){
+      .texture = background0,
+      .offset = {(game.level.bounds.width - background0.width) / 2, 0}};
+  Texture background1 = LoadTexture("content/tausta/tausta-1.png");
+  game.backgrounds[1] = (Background){
+      .texture = background1,
+      .offset = {(game.level.bounds.width - background1.width) / 2, 0}};
   Texture background2 = LoadTexture("content/tausta/edusta.png");
-  game.backgrounds[2] = (Background){
-      .texture = background2,
-      .position = {0, game.level.bounds.height - background2.height}};
+  game.backgrounds[2] =
+      (Background){.texture = background2,
+                   .offset = {(game.level.bounds.width - background2.width) / 2,
+                              game.level.bounds.height - background2.height}};
 }
