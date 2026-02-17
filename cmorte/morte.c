@@ -8,9 +8,12 @@
 #include <string.h>
 
 #include "raylib/raylib.h"
+#include "raylib/raymath.h"
 
-#define WINDOW_WIDTH 700
-#define WINDOW_HEIGHT 400
+#define ASPECT_RATIO 1.75 // 7/4 ratio
+#define VIEW_HEIGHT 400
+#define VIEW_WIDTH (VIEW_HEIGHT * ASPECT_RATIO)
+#define LEVEL_HEIGHT 400
 #define LEVEL_WIDTH 2200
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
 #define BACKGROUND_TEXTURE_COUNT 3
@@ -105,8 +108,11 @@ MorteGame game;
 void initialize_level();
 void load_content();
 
+float window_scale = 1.0f;
+
 int main(void) {
-  InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Morte mysteria");
+  InitWindow(VIEW_WIDTH * window_scale, VIEW_HEIGHT * window_scale,
+             "Morte mysteria");
 
   SetTargetFPS(60);
   DisableCursor();
@@ -134,6 +140,22 @@ int main(void) {
       game.backgrounds[0].offset.x -= 1.58f;
       game.backgrounds[1].offset.x -= 1.2f;
     }
+
+    if (IsKeyDown(KEY_J)) {
+      window_scale -= 0.05;
+      window_scale = Clamp(window_scale, 1.0, 2.0);
+      SetWindowSize(VIEW_WIDTH * window_scale, VIEW_HEIGHT * window_scale);
+    }
+    if (IsKeyDown(KEY_K)) {
+      window_scale += 0.05;
+      window_scale = Clamp(window_scale, 1.0, 2.0);
+      SetWindowSize(VIEW_WIDTH * window_scale, VIEW_HEIGHT * window_scale);
+    }
+    game.camera.zoom = window_scale;
+    game.camera.offset =
+        Vector2Scale((Vector2){(VIEW_WIDTH / 2),
+                               (VIEW_HEIGHT - game.player.texture.height / 2)},
+                     window_scale);
 
     game.camera.target =
         (Vector2){game.player.position.x + game.player.texture.width / 2,
@@ -183,7 +205,7 @@ int main(void) {
 void initialize_level() {
   game.level = (Level){
       .tag = GROUND,
-      .bounds = {0, 0, LEVEL_WIDTH, WINDOW_HEIGHT},
+      .bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT},
   };
 
   game.gravity = (Vector2){0, -700};
@@ -222,7 +244,7 @@ void load_content() {
   game.camera = (Camera2D){
       .target = {game.player.position.x + player_texture.width / 2,
                  game.player.position.y + player_texture.height / 2},
-      .offset = {WINDOW_WIDTH / 2, WINDOW_HEIGHT - player_texture.height / 2},
+      .offset = {VIEW_WIDTH / 2, VIEW_HEIGHT - player_texture.height / 2},
       .rotation = 0.0f,
       .zoom = 1.0f,
   };
