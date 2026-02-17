@@ -91,12 +91,17 @@ typedef struct {
 } Priest;
 
 typedef struct {
+  Texture border;
+} HUD;
+
+typedef struct {
   Level level;
   Vector2 gravity;
   Cursor cursor;
   Camera2D camera;
   Priest player;
   Background backgrounds[BACKGROUND_TEXTURE_COUNT];
+  HUD hud;
 } MorteGame;
 
 void MorteGame__free(MorteGame *self) {
@@ -108,7 +113,7 @@ MorteGame game;
 void initialize_level();
 void load_content();
 
-float window_scale = 1.0f;
+float window_scale = 2.0f;
 
 int main(void) {
   InitWindow(VIEW_WIDTH * window_scale, VIEW_HEIGHT * window_scale,
@@ -182,6 +187,10 @@ int main(void) {
     DrawTexture(game.backgrounds[2].texture, game.backgrounds[2].offset.x,
                 game.backgrounds[2].offset.y, WHITE);
 
+    DrawTexture(game.hud.border,
+                game.camera.target.x - game.camera.offset.x / 2,
+                game.camera.target.y - game.camera.offset.y / 2, WHITE);
+
     EndMode2D();
 
     DrawTexture(
@@ -248,6 +257,8 @@ void load_content() {
       .rotation = 0.0f,
       .zoom = 1.0f,
   };
+
+  game.hud = (HUD){.border = LoadTexture("content/border.png")};
 
   Texture background0 = LoadTexture("content/tausta/tausta-0.jpg");
   game.backgrounds[0] = (Background){
