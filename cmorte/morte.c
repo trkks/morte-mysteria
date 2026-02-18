@@ -86,12 +86,55 @@ typedef struct {
 } Background;
 
 typedef struct {
-  Vector2 position;
-  Texture texture;
-} Priest;
+  Vector2 *origin;
+  Vector2 offset;
+} ChildObject;
 
 typedef struct {
-  Texture border;
+  Vector2 position;
+  Texture2D texture;
+  Texture2D eye_texture;
+} Priest;
+
+float degrees_between(Vector2 from, Vector2 to) {
+  float radians = atan2(to.y - from.y, to.x - from.x);
+  return radians * (180.0f / PI);
+}
+
+void Priest__draw_eye(Priest *self, Camera2D camera, Cursor cursor,
+                      bool left_side) {
+  // Eye in own coordinates.
+  Vector2 independent_eye_pos = {self->eye_texture.width / 2,
+                                 self->eye_texture.height / 2};
+  // Eye in Priest coordinates.
+  Vector2 relative_eye_pos = {
+      self->texture.width / 2 +
+          (left_side ? -self->texture.width * 0.15 : 1.0f),
+      self->texture.height * 0.06};
+
+  // Eye in world coordinates.
+  Vector2 absolute_eye_pos = Vector2Add(
+      Vector2Add(independent_eye_pos, relative_eye_pos), self->position);
+
+  // Rotate the eyes to look at the cursor.
+  DrawTexturePro(
+      self->eye_texture,
+      (Rectangle){0, 0, self->eye_texture.width, self->eye_texture.height},
+      (Rectangle){absolute_eye_pos.x, absolute_eye_pos.y,
+                  self->eye_texture.width, self->eye_texture.height},
+      independent_eye_pos, degrees_between(absolute_eye_pos, cursor.position),
+      WHITE);
+}
+
+void Priest__draw(Priest *self, Camera2D camera, Cursor cursor) {
+  DrawTexture(self->texture, self->position.x, self->position.y, WHITE);
+
+  Priest__draw_eye(self, camera, cursor, true);
+  Priest__draw_eye(self, camera, cursor, false);
+}
+
+typedef struct {
+  Texture2D border;
 } HUD;
 
 typedef struct {
@@ -131,7 +174,7 @@ int main(void) {
 
     // Update.
     //----------------------------------------------------------------------------------
-    game.cursor.position = GetMousePosition();
+    game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
 
     Animation__update(&game.cursor.animation, delta);
 
@@ -181,8 +224,7 @@ int main(void) {
                   game.backgrounds[i].offset.y, WHITE);
     }
 
-    DrawTexture(game.player.texture, game.player.position.x,
-                game.player.position.y, WHITE);
+    Priest__draw(&game.player, game.camera, game.cursor);
 
     DrawTexture(game.backgrounds[2].texture, game.backgrounds[2].offset.x,
                 game.backgrounds[2].offset.y, WHITE);
@@ -191,13 +233,14 @@ int main(void) {
                 game.camera.target.x - game.camera.offset.x / 2,
                 game.camera.target.y - game.camera.offset.y / 2, WHITE);
 
-    EndMode2D();
-
     DrawTexture(
         game.cursor.animation.frames[game.cursor.animation.current_frame],
         game.cursor.position.x, game.cursor.position.y, WHITE);
 
+    EndMode2D();
+
     EndDrawing();
+
     //----------------------------------------------------------------------------------
   }
 
@@ -242,14 +285,16 @@ void load_content() {
   }
 
   Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
-  game.player =
-      (Priest){.position =
-                   {
-                       game.level.bounds.width / 2,
-                       game.level.bounds.height - player_texture.height,
-                   },
-               .texture = player_texture};
-
+  Texture2D eye_texture = LoadTexture("content/silma.png");
+  game.player = (Priest){
+      .position =
+          {
+              game.level.bounds.width / 2,
+              game.level.bounds.height - player_texture.height,
+          },
+      .texture = player_texture,
+      .eye_texture = eye_texture,
+  };
   game.camera = (Camera2D){
       .target = {game.player.position.x + player_texture.width / 2,
                  game.player.position.y + player_texture.height / 2},
@@ -260,15 +305,15 @@ void load_content() {
 
   game.hud = (HUD){.border = LoadTexture("content/border.png")};
 
-  Texture background0 = LoadTexture("content/tausta/tausta-0.jpg");
+  Texture2D background0 = LoadTexture("content/tausta/tausta-0.jpg");
   game.backgrounds[0] = (Background){
       .texture = background0,
       .offset = {(game.level.bounds.width - background0.width) / 2, 0}};
-  Texture background1 = LoadTexture("content/tausta/tausta-1.png");
+  Texture2D background1 = LoadTexture("content/tausta/tausta-1.png");
   game.backgrounds[1] = (Background){
       .texture = background1,
       .offset = {(game.level.bounds.width - background1.width) / 2, 0}};
-  Texture background2 = LoadTexture("content/tausta/edusta.png");
+  Texture2D background2 = LoadTexture("content/tausta/edusta.png");
   game.backgrounds[2] =
       (Background){.texture = background2,
                    .offset = {(game.level.bounds.width - background2.width) / 2,
