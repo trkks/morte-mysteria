@@ -16,7 +16,7 @@
 #define LEVEL_HEIGHT 400
 #define LEVEL_WIDTH 2200
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
-#define BACKGROUND_TEXTURE_COUNT 3
+#define BACKGROUND_TEXTURE_COUNT 4
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
@@ -225,10 +225,14 @@ void load_content(MorteGame *game) {
       .texture = background1,
       .offset = {(game->level.bounds.width - background1.width) / 2, 0}};
   Texture2D background2 = LoadTexture("content/tausta/edusta.png");
-  game->backgrounds[2] = (Background){
-      .texture = background2,
-      .offset = {(game->level.bounds.width - background2.width) / 2,
-                 game->level.bounds.height - background2.height}};
+  game->backgrounds[2] =
+      (Background){.texture = background2,
+                   .offset = {game->level.bounds.width / 2 - background2.width,
+                              game->level.bounds.height - background2.height}};
+  game->backgrounds[3] =
+      (Background){.texture = background2,
+                   .offset = {game->level.bounds.width / 2,
+                              game->level.bounds.height - background2.height}};
 }
 
 int main(void) {
@@ -305,6 +309,8 @@ int main(void) {
 
     DrawTexture(game.backgrounds[2].texture, game.backgrounds[2].offset.x,
                 game.backgrounds[2].offset.y, WHITE);
+    DrawTexture(game.backgrounds[3].texture, game.backgrounds[3].offset.x,
+                game.backgrounds[3].offset.y, WHITE);
 
     DrawTexture(game.hud.border,
                 game.camera.target.x - game.camera.offset.x / 2,
