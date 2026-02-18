@@ -73,7 +73,13 @@ void Animation__update(Animation *self, float delta) {
   }
 }
 
-void Animation__free(Animation *self) { free(self->frames); }
+void Animation__free(Animation *self) {
+  for (size_t i = 0; i < self->frame_count; i++) {
+    UnloadTexture(self->frames[i]);
+  }
+
+  free(self->frames);
+}
 
 typedef struct {
   Vector2 position;
@@ -149,6 +155,15 @@ typedef struct {
 
 void MorteGame__free(MorteGame *self) {
   Animation__free(&self->cursor.animation);
+
+  UnloadTexture(self->player.texture);
+  UnloadTexture(self->player.eye_texture);
+
+  for (size_t i = 0; i < BACKGROUND_TEXTURE_COUNT; i++) {
+    UnloadTexture(self->backgrounds[i].texture);
+  }
+
+  UnloadTexture(self->hud.border);
 }
 
 MorteGame game;
@@ -246,9 +261,10 @@ int main(void) {
 
   // De-Initialization.
   //--------------------------------------------------------------------------------------
-  CloseWindow();
-
+  // XXX: NOTE That textures need to be unloaded before closing window.
   MorteGame__free(&game);
+
+  CloseWindow();
   //--------------------------------------------------------------------------------------
 
   return 0;
@@ -264,21 +280,20 @@ void initialize_level() {
 }
 
 void load_content() {
-  game.cursor =
-      (Cursor){.position = {0, 0},
-               .animation = {
-                   .state = LOOPING,
-                   .frame_count = ANIMATION_FRAME_COUNT_CURSOR,
-                   .frames = (Texture2D *)malloc(ANIMATION_FRAME_COUNT_CURSOR *
-                                                 sizeof(Texture2D)),
-                   .current_frame = 0,
-                   .length_millis = ANIMATION_LENGTH_MILLIS_CURSOR,
-                   .elapsed_millis = 0,
-                   .timing = LINEAR,
-               }};
+  game.cursor = (Cursor){
+      .position = {0, 0},
+      .animation = {
+          .state = LOOPING,
+          .frame_count = ANIMATION_FRAME_COUNT_CURSOR,
+          .frames = malloc(ANIMATION_FRAME_COUNT_CURSOR * sizeof(Texture2D)),
+          .current_frame = 0,
+          .length_millis = ANIMATION_LENGTH_MILLIS_CURSOR,
+          .elapsed_millis = 0,
+          .timing = LINEAR,
+      }};
 
   for (size_t i = 0; i < game.cursor.animation.frame_count; i++) {
-    char *filename = (char *)malloc((25 + 2 + 4 + 1) * sizeof(char));
+    char *filename = malloc((25 + 2 + 4 + 1) * sizeof(char));
     sprintf(filename, "content/kursori/kursori00%02d.png", (int)i + 1);
     game.cursor.animation.frames[i] = LoadTexture(filename);
     free(filename);
