@@ -166,23 +166,85 @@ void MorteGame__free(MorteGame *self) {
   UnloadTexture(self->hud.border);
 }
 
-MorteGame game;
+void initialize_level(MorteGame *game) {
+  game->level = (Level){
+      .tag = GROUND,
+      .bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT},
+  };
 
-void initialize_level();
-void load_content();
+  game->gravity = (Vector2){0, -700};
+}
 
-float window_scale = 2.0f;
+void load_content(MorteGame *game) {
+  game->cursor = (Cursor){
+      .position = {0, 0},
+      .animation = {
+          .state = LOOPING,
+          .frame_count = ANIMATION_FRAME_COUNT_CURSOR,
+          .frames = malloc(ANIMATION_FRAME_COUNT_CURSOR * sizeof(Texture2D)),
+          .current_frame = 0,
+          .length_millis = ANIMATION_LENGTH_MILLIS_CURSOR,
+          .elapsed_millis = 0,
+          .timing = LINEAR,
+      }};
+
+  for (size_t i = 0; i < game->cursor.animation.frame_count; i++) {
+    char *filename = malloc((25 + 2 + 4 + 1) * sizeof(char));
+    sprintf(filename, "content/kursori/kursori00%02d.png", (int)i + 1);
+    game->cursor.animation.frames[i] = LoadTexture(filename);
+    free(filename);
+  }
+
+  Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
+  Texture2D eye_texture = LoadTexture("content/silma.png");
+  game->player = (Priest){
+      .position =
+          {
+              game->level.bounds.width / 2,
+              game->level.bounds.height - player_texture.height,
+          },
+      .texture = player_texture,
+      .eye_texture = eye_texture,
+  };
+  game->camera = (Camera2D){
+      .target = {game->player.position.x + player_texture.width / 2,
+                 game->player.position.y + player_texture.height / 2},
+      .offset = {VIEW_WIDTH / 2, VIEW_HEIGHT - player_texture.height / 2},
+      .rotation = 0.0f,
+      .zoom = 1.0f,
+  };
+
+  game->hud = (HUD){.border = LoadTexture("content/border.png")};
+
+  Texture2D background0 = LoadTexture("content/tausta/tausta-0.jpg");
+  game->backgrounds[0] = (Background){
+      .texture = background0,
+      .offset = {(game->level.bounds.width - background0.width) / 2, 0}};
+  Texture2D background1 = LoadTexture("content/tausta/tausta-1.png");
+  game->backgrounds[1] = (Background){
+      .texture = background1,
+      .offset = {(game->level.bounds.width - background1.width) / 2, 0}};
+  Texture2D background2 = LoadTexture("content/tausta/edusta.png");
+  game->backgrounds[2] = (Background){
+      .texture = background2,
+      .offset = {(game->level.bounds.width - background2.width) / 2,
+                 game->level.bounds.height - background2.height}};
+}
 
 int main(void) {
+  float window_scale = 2.0f;
+
   InitWindow(VIEW_WIDTH * window_scale, VIEW_HEIGHT * window_scale,
              "Morte mysteria");
 
   SetTargetFPS(60);
   DisableCursor();
 
-  initialize_level();
+  MorteGame game;
 
-  load_content();
+  initialize_level(&game);
+
+  load_content(&game);
 
   while (!WindowShouldClose()) {
     float delta = GetFrameTime();
@@ -268,69 +330,4 @@ int main(void) {
   //--------------------------------------------------------------------------------------
 
   return 0;
-}
-
-void initialize_level() {
-  game.level = (Level){
-      .tag = GROUND,
-      .bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT},
-  };
-
-  game.gravity = (Vector2){0, -700};
-}
-
-void load_content() {
-  game.cursor = (Cursor){
-      .position = {0, 0},
-      .animation = {
-          .state = LOOPING,
-          .frame_count = ANIMATION_FRAME_COUNT_CURSOR,
-          .frames = malloc(ANIMATION_FRAME_COUNT_CURSOR * sizeof(Texture2D)),
-          .current_frame = 0,
-          .length_millis = ANIMATION_LENGTH_MILLIS_CURSOR,
-          .elapsed_millis = 0,
-          .timing = LINEAR,
-      }};
-
-  for (size_t i = 0; i < game.cursor.animation.frame_count; i++) {
-    char *filename = malloc((25 + 2 + 4 + 1) * sizeof(char));
-    sprintf(filename, "content/kursori/kursori00%02d.png", (int)i + 1);
-    game.cursor.animation.frames[i] = LoadTexture(filename);
-    free(filename);
-  }
-
-  Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
-  Texture2D eye_texture = LoadTexture("content/silma.png");
-  game.player = (Priest){
-      .position =
-          {
-              game.level.bounds.width / 2,
-              game.level.bounds.height - player_texture.height,
-          },
-      .texture = player_texture,
-      .eye_texture = eye_texture,
-  };
-  game.camera = (Camera2D){
-      .target = {game.player.position.x + player_texture.width / 2,
-                 game.player.position.y + player_texture.height / 2},
-      .offset = {VIEW_WIDTH / 2, VIEW_HEIGHT - player_texture.height / 2},
-      .rotation = 0.0f,
-      .zoom = 1.0f,
-  };
-
-  game.hud = (HUD){.border = LoadTexture("content/border.png")};
-
-  Texture2D background0 = LoadTexture("content/tausta/tausta-0.jpg");
-  game.backgrounds[0] = (Background){
-      .texture = background0,
-      .offset = {(game.level.bounds.width - background0.width) / 2, 0}};
-  Texture2D background1 = LoadTexture("content/tausta/tausta-1.png");
-  game.backgrounds[1] = (Background){
-      .texture = background1,
-      .offset = {(game.level.bounds.width - background1.width) / 2, 0}};
-  Texture2D background2 = LoadTexture("content/tausta/edusta.png");
-  game.backgrounds[2] =
-      (Background){.texture = background2,
-                   .offset = {(game.level.bounds.width - background2.width) / 2,
-                              game.level.bounds.height - background2.height}};
 }
