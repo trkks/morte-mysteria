@@ -10,8 +10,10 @@
 #include "raylib/raylib.h"
 #include "raylib/raymath.h"
 
-#define ASPECT_RATIO 1.75 // 7/4 ratio
-#define VIEW_HEIGHT 400
+/* 7/4 ratio */
+#define ASPECT_RATIO 1.75
+/* View[port] height is used to scale the visual size */
+#define VIEW_HEIGHT 800
 #define VIEW_WIDTH (VIEW_HEIGHT * ASPECT_RATIO)
 #define LEVEL_HEIGHT 400
 #define LEVEL_WIDTH 2200
@@ -24,9 +26,63 @@
 enum Tag { GROUND };
 
 typedef struct {
-  enum Tag tag;
-  Rectangle bounds;
-} Level;
+  float depth;
+  Vector2 normal;
+} Collision;
+
+enum PhysicsType { STATIC, KINETIC };
+typedef struct {
+  enum PhysicsType type;
+  Rectangle aabb;
+  float mass;
+  Vector2 velocity;
+  Vector2 acceleration;
+} PhysicsBody;
+
+/* If the bodies collide, return their Collision. Otherwise return NULL.
+ *
+ * Kudos:
+ * https://gamedevelopment.tutsplus.com/tutorials/how-to-create-a-custom-2d-physics-engine-the-basics-and-impulse-resolution--gamedev-6331
+ */
+Collision *PhysicsBody__colliding(PhysicsBody *self, PhysicsBody collider) {
+  Vector2 self_half =
+      Vector2Scale((Vector2){self->aabb.width, self->aabb.height}, 0.5f);
+  Vector2 collider_half =
+      Vector2Scale((Vector2){collider.aabb.width, collider.aabb.height}, 0.5f);
+  Vector2 segment = {
+      collider.aabb.x + collider_half.x - self->aabb.x + self_half.x,
+      collider.aabb.y + collider_half.y - self->aabb.y + self_half.y,
+  };
+
+  float x_overlap = self_half.x + collider_half.x - fabs(segment.x);
+  float y_overlap = self_half.y + collider_half.y - fabs(segment.y);
+
+  if (x_overlap > 0 && y_overlap > 0) {
+    Collision *collision = malloc(sizeof(Collision));
+    if (x_overlap < y_overlap) {
+      collision->depth = x_overlap;
+      collision->normal = (Vector2){segment.x > 0 ? 1 : -1, 0};
+    } else {
+      collision->depth = y_overlap;
+      collision->normal = (Vector2){0, segment.y > 0 ? 1 : -1};
+    }
+    return collision;
+  } else {
+    return NULL;
+  }
+}
+
+void Collision__resolve(Collision *self, PhysicsBody *a, PhysicsBody *b) {
+  PhysicsBody *collider = a->mass > b->mass ? a : b;
+  PhysicsBody *collidee = a->mass > b->mass ? b : a;
+  if (collider == collidee) {
+    // Do nothing.
+    return;
+  }
+  // Bigger one moves smaller one.
+  collidee->aabb.x += self->normal.x * self->depth;
+  collidee->aabb.y += self->normal.y * self->depth;
+}
 
 enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
 
@@ -82,6 +138,12 @@ void Animation__free(Animation *self) {
 }
 
 typedef struct {
+  enum Tag tag;
+  Rectangle bounds;
+  PhysicsBody *body;
+} Level;
+
+typedef struct {
   Vector2 position;
   Animation animation;
 } Cursor;
@@ -97,9 +159,9 @@ typedef struct {
 } ChildObject;
 
 typedef struct {
-  Vector2 position;
   Texture2D texture;
   Texture2D eye_texture;
+  PhysicsBody *body;
 } Priest;
 
 float degrees_between(Vector2 from, Vector2 to) {
@@ -119,8 +181,9 @@ void Priest__draw_eye(Priest *self, Camera2D camera, Cursor cursor,
       self->texture.height * 0.06};
 
   // Eye in world coordinates.
-  Vector2 absolute_eye_pos = Vector2Add(
-      Vector2Add(independent_eye_pos, relative_eye_pos), self->position);
+  Vector2 absolute_eye_pos =
+      Vector2Add(Vector2Add(independent_eye_pos, relative_eye_pos),
+                 (Vector2){self->body->aabb.x, self->body->aabb.y});
 
   // Rotate the eyes to look at the cursor.
   DrawTexturePro(
@@ -133,7 +196,7 @@ void Priest__draw_eye(Priest *self, Camera2D camera, Cursor cursor,
 }
 
 void Priest__draw(Priest *self, Camera2D camera, Cursor cursor) {
-  DrawTexture(self->texture, self->position.x, self->position.y, WHITE);
+  DrawTexture(self->texture, self->body->aabb.x, self->body->aabb.y, WHITE);
 
   Priest__draw_eye(self, camera, cursor, true);
   Priest__draw_eye(self, camera, cursor, false);
@@ -149,6 +212,8 @@ typedef struct {
   Cursor cursor;
   Camera2D camera;
   Priest player;
+  size_t physics_body_count;
+  PhysicsBody **physics_bodies;
   Background backgrounds[BACKGROUND_TEXTURE_COUNT];
   HUD hud;
 } MorteGame;
@@ -158,6 +223,11 @@ void MorteGame__free(MorteGame *self) {
 
   UnloadTexture(self->player.texture);
   UnloadTexture(self->player.eye_texture);
+
+  for (size_t i = 0; i < self->physics_body_count; i++) {
+    free(self->physics_bodies[i]);
+  }
+  free(self->physics_bodies);
 
   for (size_t i = 0; i < BACKGROUND_TEXTURE_COUNT; i++) {
     UnloadTexture(self->backgrounds[i].texture);
@@ -170,9 +240,17 @@ void initialize_level(MorteGame *game) {
   game->level = (Level){
       .tag = GROUND,
       .bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT},
+      .body = malloc(sizeof(PhysicsBody)),
   };
+  game->level.body->type = STATIC;
+  game->level.body->aabb = game->level.bounds;
+  game->level.body->mass = 1000;
+  game->physics_body_count += 1;
+  game->physics_bodies = realloc(
+      game->physics_bodies, game->physics_body_count * sizeof(PhysicsBody *));
+  game->physics_bodies[game->physics_body_count - 1] = game->level.body;
 
-  game->gravity = (Vector2){0, -700};
+  game->gravity = (Vector2){0, 1};
 }
 
 void load_content(MorteGame *game) {
@@ -198,18 +276,25 @@ void load_content(MorteGame *game) {
   Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
   Texture2D eye_texture = LoadTexture("content/silma.png");
   game->player = (Priest){
-      .position =
-          {
-              game->level.bounds.width / 2,
-              game->level.bounds.height - player_texture.height,
-          },
       .texture = player_texture,
       .eye_texture = eye_texture,
+      .body = malloc(sizeof(PhysicsBody)),
   };
+  game->player.body->type = KINETIC;
+  game->player.body->aabb =
+      (Rectangle){game->level.bounds.width / 2,
+                  game->level.bounds.height - player_texture.height,
+                  player_texture.width, player_texture.height};
+  game->player.body->mass = 100;
+  game->player.body->acceleration = (Vector2){0, 0};
+  game->physics_body_count += 1;
+  game->physics_bodies = realloc(
+      game->physics_bodies, game->physics_body_count * sizeof(PhysicsBody));
+  game->physics_bodies[game->physics_body_count - 1] = game->player.body;
+
   game->camera = (Camera2D){
-      .target = {game->player.position.x + player_texture.width / 2,
-                 game->player.position.y + player_texture.height / 2},
-      .offset = {VIEW_WIDTH / 2, VIEW_HEIGHT - player_texture.height / 2},
+      .target = {game->player.body->aabb.x + player_texture.width / 2,
+                 game->player.body->aabb.y + player_texture.height / 2},
       .rotation = 0.0f,
       .zoom = 1.0f,
   };
@@ -236,19 +321,23 @@ void load_content(MorteGame *game) {
 }
 
 int main(void) {
-  float window_scale = 2.0f;
+  float window_scale = VIEW_HEIGHT / LEVEL_HEIGHT;
 
-  InitWindow(VIEW_WIDTH * window_scale, VIEW_HEIGHT * window_scale,
-             "Morte mysteria");
+  InitWindow(VIEW_WIDTH, VIEW_HEIGHT, "Morte mysteria");
 
   SetTargetFPS(60);
   DisableCursor();
 
-  MorteGame game;
+  MorteGame game = {0};
 
   initialize_level(&game);
 
   load_content(&game);
+
+  game.camera.zoom = window_scale;
+  game.camera.offset = Vector2Scale(
+      (Vector2){VIEW_WIDTH / 2, VIEW_HEIGHT - game.player.texture.height},
+      window_scale / 2);
 
   while (!WindowShouldClose()) {
     float delta = GetFrameTime();
@@ -260,35 +349,53 @@ int main(void) {
     Animation__update(&game.cursor.animation, delta);
 
     if (IsKeyDown(KEY_D)) {
-      game.player.position.x += 2;
+      game.player.body->aabb.x += 2;
       game.backgrounds[0].offset.x += 1.58f;
       game.backgrounds[1].offset.x += 1.2f;
     }
     if (IsKeyDown(KEY_A)) {
-      game.player.position.x -= 2;
+      game.player.body->aabb.x -= 2;
       game.backgrounds[0].offset.x -= 1.58f;
       game.backgrounds[1].offset.x -= 1.2f;
     }
-
-    if (IsKeyDown(KEY_J)) {
-      window_scale -= 0.05;
-      window_scale = Clamp(window_scale, 1.0, 2.0);
-      SetWindowSize(VIEW_WIDTH * window_scale, VIEW_HEIGHT * window_scale);
+    if (IsKeyPressed(KEY_SPACE)) {
+      game.player.body->acceleration.y += 10;
     }
-    if (IsKeyDown(KEY_K)) {
-      window_scale += 0.05;
-      window_scale = Clamp(window_scale, 1.0, 2.0);
-      SetWindowSize(VIEW_WIDTH * window_scale, VIEW_HEIGHT * window_scale);
-    }
-    game.camera.zoom = window_scale;
-    game.camera.offset =
-        Vector2Scale((Vector2){(VIEW_WIDTH / 2),
-                               (VIEW_HEIGHT - game.player.texture.height / 2)},
-                     window_scale);
+    printf("%f,%f\n", game.player.body->aabb.x, game.player.body->aabb.y);
 
     game.camera.target =
-        (Vector2){game.player.position.x + game.player.texture.width / 2,
-                  game.player.position.y + game.player.texture.height / 2};
+        (Vector2){game.player.body->aabb.x + game.player.texture.width / 2,
+                  game.player.body->aabb.y + game.player.texture.height / 2};
+
+    for (size_t i = 0; i < game.physics_body_count; i++) {
+      PhysicsBody *body = game.physics_bodies[i];
+      if (body->type != KINETIC) {
+        continue;
+      }
+
+      // Apply movement.
+      body->velocity =
+          Vector2Add(body->velocity, Vector2Scale(body->acceleration, delta));
+
+      body->aabb.x += body->velocity.x * delta;
+      body->aabb.y += body->velocity.y * delta;
+    }
+    /*
+    for (size_t i = 0; i < game.physics_body_count; i++) {
+      for (size_t j = 0; j < game.physics_body_count; j++) {
+        if (i == j) {
+          continue;
+        }
+        Collision *collision;
+        if ((collision = PhysicsBody__colliding(game.physics_bodies[i],
+                                                *game.physics_bodies[j]))) {
+          Collision__resolve(collision, game.physics_bodies[i],
+                             game.physics_bodies[j]);
+          free(collision);
+        }
+      }
+    }
+    */
 
     //----------------------------------------------------------------------------------
 
@@ -307,10 +414,10 @@ int main(void) {
 
     Priest__draw(&game.player, game.camera, game.cursor);
 
-    DrawTexture(game.backgrounds[2].texture, game.backgrounds[2].offset.x,
-                game.backgrounds[2].offset.y, WHITE);
-    DrawTexture(game.backgrounds[3].texture, game.backgrounds[3].offset.x,
-                game.backgrounds[3].offset.y, WHITE);
+    for (size_t i = 2; i < 4; i++) {
+      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].offset.x,
+                  game.backgrounds[i].offset.y, WHITE);
+    }
 
     DrawTexture(game.hud.border,
                 game.camera.target.x - game.camera.offset.x / 2,
