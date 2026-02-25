@@ -31,13 +31,26 @@ typedef struct {
 } Collision;
 
 enum PhysicsType { STATIC, KINETIC };
+
 typedef struct {
   enum PhysicsType type;
   Rectangle aabb;
   float mass;
   Vector2 velocity;
-  Vector2 acceleration;
+  Vector2 force;
 } PhysicsBody;
+
+PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
+                              float mass) {
+
+  PhysicsBody *self = (PhysicsBody *)malloc(sizeof(PhysicsBody));
+  self->type = type;
+  self->aabb = aabb;
+  self->mass = mass;
+  self->velocity = (Vector2){0, 0};
+  self->force = (Vector2){0, 0};
+  return self;
+}
 
 /* If the bodies collide, return their Collision. Otherwise return NULL.
  *
@@ -236,19 +249,21 @@ void MorteGame__free(MorteGame *self) {
   UnloadTexture(self->hud.border);
 }
 
+void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
+  self->physics_body_count += 1;
+  self->physics_bodies = realloc(
+      self->physics_bodies, self->physics_body_count * sizeof(PhysicsBody));
+  self->physics_bodies[self->physics_body_count - 1] = body;
+}
+
 void initialize_level(MorteGame *game) {
   game->level = (Level){
       .tag = GROUND,
       .bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT},
-      .body = malloc(sizeof(PhysicsBody)),
+      .body = PhysicsBody__new(STATIC, game->level.bounds, 1000),
   };
-  game->level.body->type = STATIC;
-  game->level.body->aabb = game->level.bounds;
-  game->level.body->mass = 1000;
-  game->physics_body_count += 1;
-  game->physics_bodies = realloc(
-      game->physics_bodies, game->physics_body_count * sizeof(PhysicsBody *));
-  game->physics_bodies[game->physics_body_count - 1] = game->level.body;
+
+  MorteGame__add_physics_body(game, game->level.body);
 
   game->gravity = (Vector2){0, 1};
 }
@@ -278,19 +293,13 @@ void load_content(MorteGame *game) {
   game->player = (Priest){
       .texture = player_texture,
       .eye_texture = eye_texture,
-      .body = malloc(sizeof(PhysicsBody)),
+      .body = PhysicsBody__new(
+          KINETIC,
+          (Rectangle){game->level.bounds.width / 2,
+                      game->level.bounds.height - player_texture.height,
+                      player_texture.width, player_texture.height},
+          100),
   };
-  game->player.body->type = KINETIC;
-  game->player.body->aabb =
-      (Rectangle){game->level.bounds.width / 2,
-                  game->level.bounds.height - player_texture.height,
-                  player_texture.width, player_texture.height};
-  game->player.body->mass = 100;
-  game->player.body->acceleration = (Vector2){0, 0};
-  game->physics_body_count += 1;
-  game->physics_bodies = realloc(
-      game->physics_bodies, game->physics_body_count * sizeof(PhysicsBody));
-  game->physics_bodies[game->physics_body_count - 1] = game->player.body;
 
   game->camera = (Camera2D){
       .target = {game->player.body->aabb.x + player_texture.width / 2,
@@ -359,7 +368,7 @@ int main(void) {
       game.backgrounds[1].offset.x -= 1.2f;
     }
     if (IsKeyPressed(KEY_SPACE)) {
-      game.player.body->acceleration.y += 10;
+      game.player.body->force.y = 10;
     }
     printf("%f,%f\n", game.player.body->aabb.x, game.player.body->aabb.y);
 
@@ -375,7 +384,7 @@ int main(void) {
 
       // Apply movement.
       body->velocity =
-          Vector2Add(body->velocity, Vector2Scale(body->acceleration, delta));
+          Vector2Add(body->velocity, Vector2Scale(body->force, delta));
 
       body->aabb.x += body->velocity.x * delta;
       body->aabb.y += body->velocity.y * delta;
