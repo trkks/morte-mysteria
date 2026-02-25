@@ -36,6 +36,7 @@ typedef struct {
   enum PhysicsType type;
   Rectangle aabb;
   float mass;
+  float inverse_mass;
   Vector2 velocity;
   Vector2 force;
 } PhysicsBody;
@@ -47,6 +48,7 @@ PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
   self->type = type;
   self->aabb = aabb;
   self->mass = mass;
+  self->inverse_mass = 1.0f / mass;
   self->velocity = (Vector2){0, 0};
   self->force = (Vector2){0, 0};
   return self;
@@ -250,10 +252,11 @@ void MorteGame__free(MorteGame *self) {
 }
 
 void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
+  self->physics_bodies =
+      realloc(self->physics_bodies,
+              (self->physics_body_count + 1) * sizeof(PhysicsBody));
+  self->physics_bodies[self->physics_body_count] = body;
   self->physics_body_count += 1;
-  self->physics_bodies = realloc(
-      self->physics_bodies, self->physics_body_count * sizeof(PhysicsBody));
-  self->physics_bodies[self->physics_body_count - 1] = body;
 }
 
 void initialize_level(MorteGame *game) {
@@ -265,7 +268,7 @@ void initialize_level(MorteGame *game) {
 
   MorteGame__add_physics_body(game, game->level.body);
 
-  game->gravity = (Vector2){0, 1};
+  game->gravity = (Vector2){0, 9.81f};
 }
 
 void load_content(MorteGame *game) {
@@ -300,6 +303,7 @@ void load_content(MorteGame *game) {
                       player_texture.width, player_texture.height},
           100),
   };
+  MorteGame__add_physics_body(game, game->player.body);
 
   game->camera = (Camera2D){
       .target = {game->player.body->aabb.x + player_texture.width / 2,
@@ -367,10 +371,6 @@ int main(void) {
       game.backgrounds[0].offset.x -= 1.58f;
       game.backgrounds[1].offset.x -= 1.2f;
     }
-    if (IsKeyPressed(KEY_SPACE)) {
-      game.player.body->force.y = 10;
-    }
-    printf("%f,%f\n", game.player.body->aabb.x, game.player.body->aabb.y);
 
     game.camera.target =
         (Vector2){game.player.body->aabb.x + game.player.texture.width / 2,
@@ -383,12 +383,16 @@ int main(void) {
       }
 
       // Apply movement.
-      body->velocity =
-          Vector2Add(body->velocity, Vector2Scale(body->force, delta));
+      body->force =
+          Vector2Add(body->force, Vector2Scale(game.gravity, body->mass));
 
+      body->velocity =
+          Vector2Add(body->velocity,
+                     Vector2Scale(body->force, body->inverse_mass * delta));
       body->aabb.x += body->velocity.x * delta;
       body->aabb.y += body->velocity.y * delta;
     }
+
     /*
     for (size_t i = 0; i < game.physics_body_count; i++) {
       for (size_t j = 0; j < game.physics_body_count; j++) {
