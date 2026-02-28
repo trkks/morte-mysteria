@@ -259,6 +259,44 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   self->physics_body_count += 1;
 }
 
+void MorteGame__update_physics(MorteGame *self, float delta) {
+  for (size_t i = 0; i < self->physics_body_count; i++) {
+    PhysicsBody *body = self->physics_bodies[i];
+    if (body->type != KINETIC) {
+      continue;
+    }
+
+    printf("%f,%f\n", body->velocity.x, body->velocity.y);
+
+    body->force =
+        Vector2Add(body->force, Vector2Scale(self->gravity, body->mass));
+
+    Vector2 acceleration = Vector2Scale(body->force, body->inverse_mass);
+    body->velocity =
+        Vector2Add(body->velocity, Vector2Scale(acceleration, delta));
+
+    body->aabb.x += body->velocity.x * delta;
+    body->aabb.y += body->velocity.y * delta;
+  }
+
+  /*
+  for (size_t i = 0; i < self->physics_body_count; i++) {
+    for (size_t j = 0; j < self->physics_body_count; j++) {
+      if (i == j) {
+        continue;
+      }
+      Collision *collision;
+      if ((collision = PhysicsBody__colliding(self->physics_bodies[i],
+                                              *self->physics_bodies[j]))) {
+        Collision__resolve(collision, self->physics_bodies[i],
+                           self->physics_bodies[j]);
+        free(collision);
+      }
+    }
+  }
+  */
+}
+
 void initialize_level(MorteGame *game) {
   game->level = (Level){
       .tag = GROUND,
@@ -376,40 +414,7 @@ int main(void) {
         (Vector2){game.player.body->aabb.x + game.player.texture.width / 2,
                   game.player.body->aabb.y + game.player.texture.height / 2};
 
-    for (size_t i = 0; i < game.physics_body_count; i++) {
-      PhysicsBody *body = game.physics_bodies[i];
-      if (body->type != KINETIC) {
-        continue;
-      }
-
-      // Apply movement.
-      body->force =
-          Vector2Add(body->force, Vector2Scale(game.gravity, body->mass));
-
-      body->velocity =
-          Vector2Add(body->velocity,
-                     Vector2Scale(body->force, body->inverse_mass * delta));
-      body->aabb.x += body->velocity.x * delta;
-      body->aabb.y += body->velocity.y * delta;
-    }
-
-    /*
-    for (size_t i = 0; i < game.physics_body_count; i++) {
-      for (size_t j = 0; j < game.physics_body_count; j++) {
-        if (i == j) {
-          continue;
-        }
-        Collision *collision;
-        if ((collision = PhysicsBody__colliding(game.physics_bodies[i],
-                                                *game.physics_bodies[j]))) {
-          Collision__resolve(collision, game.physics_bodies[i],
-                             game.physics_bodies[j]);
-          free(collision);
-        }
-      }
-    }
-    */
-
+    MorteGame__update_physics(&game, delta);
     //----------------------------------------------------------------------------------
 
     // Draw.
