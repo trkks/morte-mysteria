@@ -10,18 +10,40 @@
 #include "raylib/raylib.h"
 #include "raylib/raymath.h"
 
+#define E 0.00001f
 /* 7/4 ratio */
 #define ASPECT_RATIO 1.75
 /* View[port] height is used to scale the visual size */
-#define VIEW_HEIGHT 800
-#define VIEW_WIDTH (VIEW_HEIGHT * ASPECT_RATIO)
+#define WINDOW_HEIGHT 800
+#define WINDOW_WIDTH (WINDOW_HEIGHT * ASPECT_RATIO)
 #define LEVEL_HEIGHT 400
 #define LEVEL_WIDTH 2200
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
-#define BACKGROUND_TEXTURE_COUNT 4
+#define BACKGROUND_TEXTURE_COUNT 3
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
+
+// DEBUG
+// -----------------------------------------------------------------------------
+bool is_debug_mode = true;
+
+void debug__draw_point(float x, float y, Color color) {
+  int size = 12;
+  DrawRectangle(x - size / 2, y - size / 2, size, size, color);
+}
+
+void debug__draw_line(float x, float y, float dirx, float diry, Color color) {
+  float length = 20.0f;
+  Vector2 end_pos = (Vector2){x + dirx * length, y + diry * length};
+  DrawLineEx((Vector2){x, y}, end_pos, 3.0, color);
+  debug__draw_point(end_pos.x, end_pos.y, BLACK);
+}
+// -----------------------------------------------------------------------------
+
+bool float__eq(float value, float other) {
+  return other - E < value && value < other + E;
+}
 
 enum Tag { GROUND };
 
@@ -39,11 +61,16 @@ typedef struct {
   float inverse_mass;
   Vector2 velocity;
   Vector2 force;
+  bool is_grounded;
 } PhysicsBody;
+
+void debug__draw_body(PhysicsBody body, Color color) {
+  DrawRectangleLinesEx(body.aabb, 3, color);
+  DrawRectangleRec(body.aabb, GetColor(ColorToInt(color) & 0xff00ff77));
+}
 
 PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
                               float mass) {
-
   PhysicsBody *self = (PhysicsBody *)malloc(sizeof(PhysicsBody));
   self->type = type;
   self->aabb = aabb;
@@ -56,23 +83,28 @@ PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
 
 /* If the bodies collide, return their Collision. Otherwise return NULL.
  *
- * Kudos:
+ * ## Kudos:
+ * -
  * https://gamedevelopment.tutsplus.com/tutorials/how-to-create-a-custom-2d-physics-engine-the-basics-and-impulse-resolution--gamedev-6331
+ * - https://textbooks.cs.ksu.edu/cis580/04-collisions/index.html
+ * -
+ * https://www.raylib.com/examples/core/loader.html?name=core_2d_camera_platformer
  */
-Collision *PhysicsBody__colliding(PhysicsBody *self, PhysicsBody collider) {
+Collision *PhysicsBody__colliding(PhysicsBody *self, PhysicsBody other) {
   Vector2 self_half =
       Vector2Scale((Vector2){self->aabb.width, self->aabb.height}, 0.5f);
-  Vector2 collider_half =
-      Vector2Scale((Vector2){collider.aabb.width, collider.aabb.height}, 0.5f);
+  Vector2 other_half =
+      Vector2Scale((Vector2){other.aabb.width, other.aabb.height}, 0.5f);
   Vector2 segment = {
-      collider.aabb.x + collider_half.x - self->aabb.x + self_half.x,
-      collider.aabb.y + collider_half.y - self->aabb.y + self_half.y,
+      other.aabb.x + other_half.x - (self->aabb.x + self_half.x),
+      other.aabb.y + other_half.y - (self->aabb.y + self_half.y),
   };
 
-  float x_overlap = self_half.x + collider_half.x - fabs(segment.x);
-  float y_overlap = self_half.y + collider_half.y - fabs(segment.y);
+  float x_overlap = self_half.x + other_half.x - fabs(segment.x);
+  float y_overlap = self_half.y + other_half.y - fabs(segment.y);
 
-  if (x_overlap > 0 && y_overlap > 0) {
+  if (!float__eq(x_overlap, 0) && !float__eq(y_overlap, 0) && -E < x_overlap &&
+      -E < y_overlap) {
     Collision *collision = malloc(sizeof(Collision));
     if (x_overlap < y_overlap) {
       collision->depth = x_overlap;
@@ -87,16 +119,28 @@ Collision *PhysicsBody__colliding(PhysicsBody *self, PhysicsBody collider) {
   }
 }
 
+/*
+ * NOTE: This method assumes the bodies `a` and `b` are not the same body AND
+ * that their mass is non-zero.
+ */
 void Collision__resolve(Collision *self, PhysicsBody *a, PhysicsBody *b) {
-  PhysicsBody *collider = a->mass > b->mass ? a : b;
-  PhysicsBody *collidee = a->mass > b->mass ? b : a;
-  if (collider == collidee) {
-    // Do nothing.
+  if (a->type == STATIC && b->type == STATIC) {
+    // Do nothing as both bodies should always remain stationary.
     return;
   }
-  // Bigger one moves smaller one.
-  collidee->aabb.x += self->normal.x * self->depth;
-  collidee->aabb.y += self->normal.y * self->depth;
+
+  if (a->type == STATIC) {
+    b->aabb.x += self->normal.x * self->depth;
+    b->aabb.y += self->normal.y * self->depth;
+  } else if (b->type == STATIC) {
+    a->aabb.x += self->normal.x * self->depth;
+    a->aabb.y += self->normal.y * self->depth;
+  } else /* a->type == KINETIC && b->type == KINETIC */ {
+    a->aabb.x += self->normal.x * self->depth * b->mass / a->mass;
+    a->aabb.y += self->normal.y * self->depth * b->mass / a->mass;
+    b->aabb.x += self->normal.x * self->depth * a->mass / b->mass;
+    b->aabb.y += self->normal.y * self->depth * a->mass / b->mass;
+  }
 }
 
 enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
@@ -164,7 +208,7 @@ typedef struct {
 } Cursor;
 
 typedef struct {
-  Vector2 offset;
+  Vector2 position;
   Texture2D texture;
 } Background;
 
@@ -223,7 +267,8 @@ typedef struct {
 
 typedef struct {
   Level level;
-  Vector2 gravity;
+  Vector2 view_size;
+  float gravity;
   Cursor cursor;
   Camera2D camera;
   Priest player;
@@ -260,53 +305,100 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
 }
 
 void MorteGame__update_physics(MorteGame *self, float delta) {
+  // Apply forces.
   for (size_t i = 0; i < self->physics_body_count; i++) {
     PhysicsBody *body = self->physics_bodies[i];
     if (body->type != KINETIC) {
       continue;
     }
 
-    printf("%f,%f\n", body->velocity.x, body->velocity.y);
+    if (!body->is_grounded) {
+      body->force.y += self->gravity * delta;
+      body->velocity.x *= 0.95;
+    } else {
+      body->velocity.x = 0;
+    }
 
-    body->force =
-        Vector2Add(body->force, Vector2Scale(self->gravity, body->mass));
-
-    Vector2 acceleration = Vector2Scale(body->force, body->inverse_mass);
-    body->velocity =
-        Vector2Add(body->velocity, Vector2Scale(acceleration, delta));
+    body->velocity.x += body->force.x;
+    body->velocity.y += body->force.y;
 
     body->aabb.x += body->velocity.x * delta;
     body->aabb.y += body->velocity.y * delta;
+
+    // This seems to make the jump ramp nicely on the fall.
+    body->force.y = body->is_grounded ? 0 : self->gravity * delta;
+    body->force.x = 0;
   }
 
-  /*
+  // Check collisions.
   for (size_t i = 0; i < self->physics_body_count; i++) {
+    PhysicsBody *body = self->physics_bodies[i];
+
     for (size_t j = 0; j < self->physics_body_count; j++) {
       if (i == j) {
         continue;
       }
+      PhysicsBody *other_body = self->physics_bodies[j];
       Collision *collision;
-      if ((collision = PhysicsBody__colliding(self->physics_bodies[i],
-                                              *self->physics_bodies[j]))) {
-        Collision__resolve(collision, self->physics_bodies[i],
-                           self->physics_bodies[j]);
+      if ((collision = PhysicsBody__colliding(body, *other_body))) {
+        if (is_debug_mode) {
+          BeginDrawing();
+
+          BeginMode2D(self->camera);
+          debug__draw_body(*body, YELLOW);
+          debug__draw_body(*other_body, YELLOW);
+          debug__draw_line(body->aabb.x, body->aabb.y, collision->normal.x,
+                           collision->normal.y, YELLOW);
+          EndMode2D();
+          EndDrawing();
+        }
+
+        // Resolve collisions.
+        Collision__resolve(collision, body, other_body);
+
+        // Check for game specific resolutions.
+        if (float__eq(collision->normal.x, 0) &&
+            float__eq(collision->normal.y, -1)) {
+          // Keep the object on the ground but nudge it a bit up so it doesn't
+          // collide immediately again.
+          if (body->type == KINETIC && other_body->type == STATIC) {
+            body->is_grounded = true;
+            other_body->velocity.y = 0;
+          } else if (other_body->type == KINETIC && body->type == STATIC) {
+            other_body->is_grounded = true;
+            other_body->velocity.y = 0;
+          }
+        }
         free(collision);
       }
     }
   }
-  */
+}
+
+/*
+ * While keeping the view inside the level bounds, focus camera's center on the
+ * `object` center.
+ */
+void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
+  self->camera.target = (Vector2){object.x, object.y};
+  self->camera.offset = Vector2Scale(self->view_size, 0.5);
 }
 
 void initialize_level(MorteGame *game) {
+  Rectangle level_bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT};
   game->level = (Level){
       .tag = GROUND,
-      .bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT},
-      .body = PhysicsBody__new(STATIC, game->level.bounds, 1000),
+      .bounds = level_bounds,
+      .body = PhysicsBody__new(
+          STATIC,
+          (Rectangle){-level_bounds.width / 2, level_bounds.height,
+                      level_bounds.width, level_bounds.height},
+          0),
   };
 
   MorteGame__add_physics_body(game, game->level.body);
 
-  game->gravity = (Vector2){0, 9.81f};
+  game->gravity = 400;
 }
 
 void load_content(MorteGame *game) {
@@ -336,89 +428,96 @@ void load_content(MorteGame *game) {
       .eye_texture = eye_texture,
       .body = PhysicsBody__new(
           KINETIC,
-          (Rectangle){game->level.bounds.width / 2,
+          (Rectangle){-game->level.bounds.width / 2 + player_texture.width,
                       game->level.bounds.height - player_texture.height,
                       player_texture.width, player_texture.height},
           100),
   };
   MorteGame__add_physics_body(game, game->player.body);
 
-  game->camera = (Camera2D){
-      .target = {game->player.body->aabb.x + player_texture.width / 2,
-                 game->player.body->aabb.y + player_texture.height / 2},
-      .rotation = 0.0f,
-      .zoom = 1.0f,
-  };
-
   game->hud = (HUD){.border = LoadTexture("content/border.png")};
 
   Texture2D background0 = LoadTexture("content/tausta/tausta-0.jpg");
-  game->backgrounds[0] = (Background){
-      .texture = background0,
-      .offset = {(game->level.bounds.width - background0.width) / 2, 0}};
+  game->backgrounds[0] = (Background){.texture = background0,
+                                      .position = {-background0.width / 2, 0}};
   Texture2D background1 = LoadTexture("content/tausta/tausta-1.png");
-  game->backgrounds[1] = (Background){
-      .texture = background1,
-      .offset = {(game->level.bounds.width - background1.width) / 2, 0}};
+  game->backgrounds[1] = (Background){.texture = background1,
+                                      .position = {-background1.width / 2, 0}};
   Texture2D background2 = LoadTexture("content/tausta/edusta.png");
-  game->backgrounds[2] =
-      (Background){.texture = background2,
-                   .offset = {game->level.bounds.width / 2 - background2.width,
-                              game->level.bounds.height - background2.height}};
-  game->backgrounds[3] =
-      (Background){.texture = background2,
-                   .offset = {game->level.bounds.width / 2,
-                              game->level.bounds.height - background2.height}};
+  game->backgrounds[2] = (Background){
+      .texture = background2,
+      .position = {-background2.width / 2,
+                   game->level.bounds.height - background2.height}};
 }
 
 int main(void) {
-  float window_scale = VIEW_HEIGHT / LEVEL_HEIGHT;
 
-  InitWindow(VIEW_WIDTH, VIEW_HEIGHT, "Morte mysteria");
+  InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Morte mysteria");
 
   SetTargetFPS(60);
   DisableCursor();
 
   MorteGame game = {0};
+  game.camera = (Camera2D){0};
+  game.camera.zoom = WINDOW_HEIGHT / LEVEL_HEIGHT;
+  game.view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT};
 
   initialize_level(&game);
 
   load_content(&game);
 
-  game.camera.zoom = window_scale;
-  game.camera.offset = Vector2Scale(
-      (Vector2){VIEW_WIDTH / 2, VIEW_HEIGHT - game.player.texture.height},
-      window_scale / 2);
-
   while (!WindowShouldClose()) {
     float delta = GetFrameTime();
 
     // Update.
-    //----------------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
 
     Animation__update(&game.cursor.animation, delta);
 
-    if (IsKeyDown(KEY_D)) {
-      game.player.body->aabb.x += 2;
-      game.backgrounds[0].offset.x += 1.58f;
-      game.backgrounds[1].offset.x += 1.2f;
-    }
-    if (IsKeyDown(KEY_A)) {
-      game.player.body->aabb.x -= 2;
-      game.backgrounds[0].offset.x -= 1.58f;
-      game.backgrounds[1].offset.x -= 1.2f;
+    MorteGame__focus_view_on(&game, game.player.body->aabb);
+
+    if (is_debug_mode) {
+      game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
+      float target_relative_offset_x =
+          game.camera.target.x / game.level.bounds.width;
+      printf("playerx %f\n%f / %f = %f\n", game.player.body->aabb.x,
+             game.camera.target.x, game.level.bounds.width,
+             target_relative_offset_x);
     }
 
-    game.camera.target =
-        (Vector2){game.player.body->aabb.x + game.player.texture.width / 2,
-                  game.player.body->aabb.y + game.player.texture.height / 2};
+    if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_P)) {
+      is_debug_mode = !is_debug_mode;
+    }
+
+    // Horizontal movement is instant.
+    if (IsKeyDown(KEY_D)) {
+      game.player.body->force.x =
+          50.0f * (game.player.body->is_grounded ? 1.0f : 0.1f);
+    } else if (IsKeyDown(KEY_A)) {
+      game.player.body->force.x =
+          -50.0f * (game.player.body->is_grounded ? 1.0f : 0.1f);
+    } else {
+      game.player.body->force.x = 0;
+    }
+
+    // Vertical movement is physics-based.
+    if (IsKeyDown(KEY_SPACE) && game.player.body->is_grounded) {
+      game.player.body->force.y -= 350;
+      game.player.body->is_grounded = false;
+    }
 
     MorteGame__update_physics(&game, delta);
-    //----------------------------------------------------------------------------------
+
+    // Update parallax according to updated camera target position.
+    for (size_t i = 0; i < 2; i++) {
+      Background background = game.backgrounds[i];
+      background.position.x = 0;
+    }
+    // -------------------------------------------------------------------------
 
     // Draw.
-    //----------------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     BeginDrawing();
 
     ClearBackground(BACKGROUND_COLOR);
@@ -426,39 +525,54 @@ int main(void) {
     BeginMode2D(game.camera);
 
     for (size_t i = 0; i < 2; i++) {
-      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].offset.x,
-                  game.backgrounds[i].offset.y, WHITE);
+      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].position.x,
+                  game.backgrounds[i].position.y, WHITE);
     }
 
     Priest__draw(&game.player, game.camera, game.cursor);
 
     for (size_t i = 2; i < 4; i++) {
-      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].offset.x,
-                  game.backgrounds[i].offset.y, WHITE);
+      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].position.x,
+                  game.backgrounds[i].position.y, WHITE);
     }
 
     DrawTexture(game.hud.border,
-                game.camera.target.x - game.camera.offset.x / 2,
-                game.camera.target.y - game.camera.offset.y / 2, WHITE);
+                game.camera.target.x - game.hud.border.width / 2,
+                game.camera.target.y - game.hud.border.height / 2, WHITE);
 
     DrawTexture(
         game.cursor.animation.frames[game.cursor.animation.current_frame],
         game.cursor.position.x, game.cursor.position.y, WHITE);
 
+    if (is_debug_mode) {
+      for (size_t i = 0; i < game.physics_body_count; i++) {
+        debug__draw_body(*game.physics_bodies[i], MAGENTA);
+      }
+
+      debug__draw_point(game.camera.target.x, game.camera.target.y, GREEN);
+      debug__draw_point(game.camera.target.x - game.camera.offset.x,
+                        game.camera.target.y - game.camera.offset.y, SKYBLUE);
+      debug__draw_point(0, 0, WHITE);
+    }
+
     EndMode2D();
+
+    if (is_debug_mode) {
+      DrawText("DEBUG", 45, 35, 50, GREEN);
+    }
 
     EndDrawing();
 
-    //----------------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
   }
 
   // De-Initialization.
-  //--------------------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // XXX: NOTE That textures need to be unloaded before closing window.
   MorteGame__free(&game);
 
   CloseWindow();
-  //--------------------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
 
   return 0;
 }
