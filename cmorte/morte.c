@@ -50,7 +50,8 @@ bool Vector2__eq(Vector2 a, Vector2 b) {
   return float__eq(a.x, b.x) && float__eq(a.y, b.y);
 }
 
-enum Tag { GROUND };
+enum EnemyTag { SNAKE = 0, WACKO, GULL, HAND };
+enum PropTag { GROUND };
 
 typedef struct {
   // This replaces using NULL as a flag if there was no collision.
@@ -78,7 +79,7 @@ void debug__draw_body(PhysicsBody body, Color color) {
 
 PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
                               float mass) {
-  PhysicsBody *self = (PhysicsBody *)malloc(sizeof(PhysicsBody));
+  PhysicsBody *self = malloc(sizeof(PhysicsBody));
   self->type = type;
   self->aabb = aabb;
   self->mass = mass;
@@ -146,6 +147,18 @@ void Collision__resolve(Collision *self, PhysicsBody *a, PhysicsBody *b) {
   }
 }
 
+typedef struct {
+  PhysicsBody *body;
+  Texture2D texture;
+} RenderBody;
+
+RenderBody *RenderBody__new(PhysicsBody *body, Texture2D texture) {
+  RenderBody *self = malloc(sizeof(RenderBody));
+  self->body = body;
+  self->texture = texture;
+  return self;
+}
+
 enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
 
 enum AnimationTiming { LINEAR, EASE_IN, EASE_OUT };
@@ -200,7 +213,7 @@ void Animation__free(Animation *self) {
 }
 
 typedef struct {
-  enum Tag tag;
+  enum PropTag tag;
   Rectangle bounds;
   PhysicsBody *body;
 } Level;
@@ -225,6 +238,12 @@ typedef struct {
   Texture2D eye_texture;
   PhysicsBody *body;
 } Priest;
+
+typedef struct {
+  enum EnemyTag tag;
+  Texture2D texture;
+  PhysicsBody *body;
+} Gull;
 
 float degrees_between(Vector2 from, Vector2 to) {
   float radians = atan2(to.y - from.y, to.x - from.x);
@@ -276,7 +295,9 @@ typedef struct {
   Camera2D camera;
   Priest player;
   size_t physics_body_count;
+  size_t render_body_count;
   PhysicsBody **physics_bodies;
+  RenderBody **render_bodies;
   Background backgrounds[BACKGROUND_TEXTURE_COUNT];
   HUD hud;
 } MorteGame;
@@ -292,11 +313,24 @@ void MorteGame__free(MorteGame *self) {
   }
   free(self->physics_bodies);
 
+  for (size_t i = 0; i < self->render_body_count; i++) {
+    UnloadTexture(self->render_bodies[i]->texture);
+    free(self->render_bodies[i]);
+  }
+  free(self->render_bodies);
+
   for (size_t i = 0; i < BACKGROUND_TEXTURE_COUNT; i++) {
     UnloadTexture(self->backgrounds[i].texture);
   }
 
   UnloadTexture(self->hud.border);
+}
+
+void MorteGame__add_render_body(MorteGame *self, RenderBody *body) {
+  self->render_bodies = realloc(
+      self->render_bodies, (self->render_body_count + 1) * sizeof(RenderBody));
+  self->render_bodies[self->render_body_count] = body;
+  self->render_body_count += 1;
 }
 
 void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
@@ -379,8 +413,8 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
 }
 
 /*
- * While keeping the view inside the level bounds, focus camera's center on the
- * `object` center.
+ * While keeping the view inside the level bounds, focus camera's center on
+ * the `object` center.
  */
 void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
   self->camera.target = (Vector2){object.x, object.y};
@@ -404,26 +438,44 @@ void initialize_level(MorteGame *game) {
   game->gravity = 400;
 }
 
-/*
- * Place a priest at the position (px,py) with offset (to_x, to_y) based on the
- * size of its texture.
- */
-void MorteGame__add_priest(MorteGame *self, float px, float py, float to_x,
-                           float to_y) {
+void MorteGame__spawn_priest(MorteGame *self) {
   Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
   Texture2D eye_texture = LoadTexture("content/silma.png");
-
   self->player = (Priest){
       .texture = player_texture,
       .eye_texture = eye_texture,
-      .body = PhysicsBody__new(KINETIC,
-                               (Rectangle){px + player_texture.width * to_x,
-                                           py + player_texture.height * to_y,
-                                           player_texture.width,
-                                           player_texture.height},
-                               100),
+      .body = PhysicsBody__new(
+          KINETIC,
+          (Rectangle){-self->level.bounds.width / 2 + player_texture.width,
+                      self->level.bounds.height - player_texture.height,
+                      player_texture.width, player_texture.height},
+          100),
   };
   MorteGame__add_physics_body(self, self->player.body);
+}
+
+void MorteGame__spawn_enemy(MorteGame *self, enum EnemyTag type) {
+  switch (type) {
+  case SNAKE:
+    break;
+  case WACKO:
+    break;
+  case GULL:
+    Texture2D gull_texture = LoadTexture("content/uggies/gull/lokki0001.png");
+    Gull gull = {.tag = GULL,
+                 .texture = gull_texture,
+                 .body = PhysicsBody__new(
+                     KINETIC,
+                     (Rectangle){self->player.body->aabb.x + 50,
+                                 self->player.body->aabb.y - 50,
+                                 gull_texture.width, gull_texture.height},
+                     20)};
+    MorteGame__add_physics_body(self, gull.body);
+    MorteGame__add_render_body(self, RenderBody__new(gull.body, gull.texture));
+    break;
+  case HAND:
+    break;
+  }
 }
 
 void load_content(MorteGame *game) {
@@ -446,8 +498,7 @@ void load_content(MorteGame *game) {
     free(filename);
   }
 
-  MorteGame__add_priest(game, -game->level.bounds.width / 2,
-                        game->level.bounds.height, 1, -1);
+  MorteGame__spawn_priest(game);
 
   game->hud = (HUD){.border = LoadTexture("content/border.png")};
 
@@ -498,6 +549,13 @@ int main(void) {
       game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
       float target_relative_offset_x =
           game.camera.target.x / game.level.bounds.width;
+
+      // Enemy spawn control.
+      for (size_t i = SNAKE; i < HAND; i++) {
+        if (IsKeyPressed(KEY_ONE + i)) {
+          MorteGame__spawn_enemy(&game, i);
+        }
+      }
     }
 
     if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_P)) {
@@ -542,6 +600,11 @@ int main(void) {
     }
 
     Priest__draw(&game.player, game.camera, game.cursor);
+
+    for (size_t i = 0; i < game.render_body_count; i++) {
+      RenderBody *body = game.render_bodies[i];
+      DrawTexture(body->texture, body->body->aabb.x, body->body->aabb.y, WHITE);
+    }
 
     for (size_t i = 2; i < 4; i++) {
       DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].position.x,
