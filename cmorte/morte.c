@@ -24,6 +24,8 @@
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
+#define ANIMATION_FRAME_COUNT_GULL 19
+#define ANIMATION_LENGTH_MILLIS_GULL 1000
 
 // DEBUG
 // -----------------------------------------------------------------------------
@@ -316,8 +318,8 @@ void Uggy__draw_priest_eye(Uggy *self, Camera2D camera, Cursor cursor,
 }
 
 void Uggy__draw(Uggy *self, Camera2D camera, Cursor cursor) {
-  DrawTexture(self->animation.frames[0], self->body->aabb.x, self->body->aabb.y,
-              WHITE);
+  DrawTexture(self->animation.frames[self->animation.current_frame],
+              self->body->aabb.x, self->body->aabb.y, WHITE);
 
   switch (self->type) {
   case PRIEST:
@@ -523,15 +525,19 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
   case WACKO:
     break;
   case GULL:
-    Texture2D gull_texture = LoadTexture("content/uggies/gull/lokki0001.png");
-    Uggy *gull = Uggy__new(
-        GULL,
-        PhysicsBody__new(KINETIC,
-                         (Rectangle){self->player->body->aabb.x + 50,
-                                     self->player->body->aabb.y - 50,
-                                     gull_texture.width, gull_texture.height},
-                         20),
-        Animation__from_frames(1, &gull_texture, 0));
+    Animation gull_animation = Animation__from_path_template(
+        "content/uggies/gull/lokki%04d.png", ANIMATION_FRAME_COUNT_GULL,
+        ANIMATION_LENGTH_MILLIS_GULL);
+    Uggy *gull =
+        Uggy__new(GULL,
+                  PhysicsBody__new(KINETIC,
+                                   (Rectangle){self->player->body->aabb.x + 50,
+                                               self->player->body->aabb.y - 50,
+                                               gull_animation.frames[0].width,
+                                               gull_animation.frames[0].height},
+                                   20),
+                  gull_animation);
+    gull->animation.state = LOOPING;
     MorteGame__add_uggy(self, gull);
     break;
   case HAND:
@@ -590,6 +596,9 @@ int main(void) {
 
     game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
 
+    for (size_t i = 0; i < game.uggy_count; i++) {
+      Animation__update(&game.uggies[i]->animation, delta);
+    }
     Animation__update(&game.cursor.animation, delta);
 
     MorteGame__focus_view_on(&game, game.player->body->aabb);
@@ -649,8 +658,7 @@ int main(void) {
     }
 
     for (size_t i = 0; i < game.uggy_count; i++) {
-      Uggy *uggy = game.uggies[i];
-      Uggy__draw(uggy, game.camera, game.cursor);
+      Uggy__draw(game.uggies[i], game.camera, game.cursor);
     }
 
     for (size_t i = 2; i < 4; i++) {
