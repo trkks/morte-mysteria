@@ -44,6 +44,8 @@ void debug__draw_line(float x, float y, float dirx, float diry, Color color) {
 }
 // -----------------------------------------------------------------------------
 
+float frand() { return (float)rand() / (float)RAND_MAX; }
+
 bool float__eq(float a, float b) { return b - E < a && a < b + E; }
 
 bool float__is_positive(float a) { return !float__eq(a, 0) && -E < a; }
@@ -475,6 +477,7 @@ void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
 }
 
 void initialize_level(MorteGame *game) {
+  srand(666);
   Rectangle level_bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT};
   game->level = (Level){
       .type = GROUND,
@@ -545,6 +548,48 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
   }
 }
 
+void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
+  Animation__update(&uggy->animation, delta);
+
+  switch (uggy->type) {
+  case PRIEST:
+    // Horizontal movement control.
+    if (IsKeyDown(KEY_D)) {
+      self->player->body->force.x =
+          50.0f * (self->player->body->is_grounded ? 1.0f : 0.1f);
+    } else if (IsKeyDown(KEY_A)) {
+      self->player->body->force.x =
+          -50.0f * (self->player->body->is_grounded ? 1.0f : 0.1f);
+    } else {
+      self->player->body->force.x = 0;
+    }
+
+    // Vertical movement control.
+    if (IsKeyDown(KEY_SPACE) && self->player->body->is_grounded) {
+      self->player->body->force.y -= 350;
+      self->player->body->is_grounded = false;
+    }
+    break;
+  case SNAKE:
+    break;
+  case WACKO:
+    break;
+  case GULL:
+    if (uggy->body->aabb.y > 50.0f) {
+      uggy->body->force = (Vector2){
+          .x =
+              fmin(30.0f, fabs(30.0f - uggy->body->velocity.x)) *
+              (self->player->body->aabb.x > uggy->body->aabb.x ? 1.0f : -1.0f) *
+              Clamp(frand(), 0.8f, 1.0f),
+          .y = -10.0 * Clamp(frand(), 0.8f, 1.0f),
+      };
+    }
+    break;
+  case HAND:
+    break;
+  }
+}
+
 void load_content(MorteGame *game) {
   game->cursor = (Cursor){.position = {0, 0},
                           .animation = Animation__from_path_template(
@@ -571,7 +616,6 @@ void load_content(MorteGame *game) {
 }
 
 int main(void) {
-
   InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT,
              "Morte Mysteria dom Domine dem Daemonium");
 
@@ -596,13 +640,6 @@ int main(void) {
 
     game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
 
-    for (size_t i = 0; i < game.uggy_count; i++) {
-      Animation__update(&game.uggies[i]->animation, delta);
-    }
-    Animation__update(&game.cursor.animation, delta);
-
-    MorteGame__focus_view_on(&game, game.player->body->aabb);
-
     if (is_debug_mode) {
       game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
       float target_relative_offset_x =
@@ -620,22 +657,13 @@ int main(void) {
       is_debug_mode = !is_debug_mode;
     }
 
-    // Horizontal movement control.
-    if (IsKeyDown(KEY_D)) {
-      game.player->body->force.x =
-          50.0f * (game.player->body->is_grounded ? 1.0f : 0.1f);
-    } else if (IsKeyDown(KEY_A)) {
-      game.player->body->force.x =
-          -50.0f * (game.player->body->is_grounded ? 1.0f : 0.1f);
-    } else {
-      game.player->body->force.x = 0;
+    for (size_t i = 0; i < game.uggy_count; i++) {
+      MorteGame__update_uggy(&game, game.uggies[i], delta);
     }
 
-    // Vertical movement control.
-    if (IsKeyDown(KEY_SPACE) && game.player->body->is_grounded) {
-      game.player->body->force.y -= 350;
-      game.player->body->is_grounded = false;
-    }
+    Animation__update(&game.cursor.animation, delta);
+
+    MorteGame__focus_view_on(&game, game.player->body->aabb);
 
     // Update parallax according to updated camera target position.
     for (size_t i = 0; i < 2; i++) {
