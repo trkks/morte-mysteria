@@ -10,6 +10,7 @@
 #include "raylib/raylib.h"
 #include "raylib/raymath.h"
 
+#define UP (Vector2){0, -1}
 #define E 0.00001f
 /* 7/4 ratio */
 #define ASPECT_RATIO 1.75
@@ -41,13 +42,19 @@ void debug__draw_line(float x, float y, float dirx, float diry, Color color) {
 }
 // -----------------------------------------------------------------------------
 
-bool float__eq(float value, float other) {
-  return other - E < value && value < other + E;
+bool float__eq(float a, float b) { return b - E < a && a < b + E; }
+
+bool float__is_positive(float a) { return !float__eq(a, 0) && -E < a; }
+
+bool Vector2__eq(Vector2 a, Vector2 b) {
+  return float__eq(a.x, b.x) && float__eq(a.y, b.y);
 }
 
 enum Tag { GROUND };
 
 typedef struct {
+  // This replaces using NULL as a flag if there was no collision.
+  bool happened;
   float depth;
   Vector2 normal;
 } Collision;
@@ -81,16 +88,14 @@ PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
   return self;
 }
 
-/* If the bodies collide, return their Collision. Otherwise return NULL.
+/* Return if and how the bodies collide.
  *
  * ## Kudos:
  * -
  * https://gamedevelopment.tutsplus.com/tutorials/how-to-create-a-custom-2d-physics-engine-the-basics-and-impulse-resolution--gamedev-6331
  * - https://textbooks.cs.ksu.edu/cis580/04-collisions/index.html
- * -
- * https://www.raylib.com/examples/core/loader.html?name=core_2d_camera_platformer
  */
-Collision *PhysicsBody__colliding(PhysicsBody *self, PhysicsBody other) {
+Collision PhysicsBody__colliding(PhysicsBody *self, PhysicsBody other) {
   Vector2 self_half =
       Vector2Scale((Vector2){self->aabb.width, self->aabb.height}, 0.5f);
   Vector2 other_half =
@@ -103,20 +108,18 @@ Collision *PhysicsBody__colliding(PhysicsBody *self, PhysicsBody other) {
   float x_overlap = self_half.x + other_half.x - fabs(segment.x);
   float y_overlap = self_half.y + other_half.y - fabs(segment.y);
 
-  if (!float__eq(x_overlap, 0) && !float__eq(y_overlap, 0) && -E < x_overlap &&
-      -E < y_overlap) {
-    Collision *collision = malloc(sizeof(Collision));
+  Collision collision = {.happened = false};
+  if (float__is_positive(x_overlap) && float__is_positive(y_overlap)) {
+    collision.happened = true;
     if (x_overlap < y_overlap) {
-      collision->depth = x_overlap;
-      collision->normal = (Vector2){segment.x > 0 ? 1 : -1, 0};
+      collision.depth = x_overlap;
+      collision.normal = (Vector2){segment.x > 0 ? 1 : -1, 0};
     } else {
-      collision->depth = y_overlap;
-      collision->normal = (Vector2){0, segment.y > 0 ? 1 : -1};
+      collision.depth = y_overlap;
+      collision.normal = (Vector2){0, segment.y > 0 ? 1 : -1};
     }
-    return collision;
-  } else {
-    return NULL;
   }
+  return collision;
 }
 
 /*
@@ -304,6 +307,11 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   self->physics_body_count += 1;
 }
 
+/*
+ * ## Kudos:
+ * -
+ * https://www.raylib.com/examples/core/loader.html?name=core_2d_camera_platformer
+ */
 void MorteGame__update_physics(MorteGame *self, float delta) {
   // Apply forces.
   for (size_t i = 0; i < self->physics_body_count; i++) {
@@ -316,7 +324,7 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
       body->force.y += self->gravity * delta;
       body->velocity.x *= 0.95;
     } else {
-      body->velocity.x = 0;
+      body->velocity.x *= 0.6;
     }
 
     body->velocity.x += body->force.x;
@@ -327,7 +335,6 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
 
     // This seems to make the jump ramp nicely on the fall.
     body->force.y = body->is_grounded ? 0 : self->gravity * delta;
-    body->force.x = 0;
   }
 
   // Check collisions.
@@ -339,28 +346,25 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
         continue;
       }
       PhysicsBody *other_body = self->physics_bodies[j];
-      Collision *collision;
-      if ((collision = PhysicsBody__colliding(body, *other_body))) {
+      Collision collision = PhysicsBody__colliding(body, *other_body);
+      if (collision.happened) {
         if (is_debug_mode) {
           BeginDrawing();
 
           BeginMode2D(self->camera);
           debug__draw_body(*body, YELLOW);
           debug__draw_body(*other_body, YELLOW);
-          debug__draw_line(body->aabb.x, body->aabb.y, collision->normal.x,
-                           collision->normal.y, YELLOW);
+          debug__draw_line(body->aabb.x, body->aabb.y, collision.normal.x,
+                           collision.normal.y, YELLOW);
           EndMode2D();
           EndDrawing();
         }
 
         // Resolve collisions.
-        Collision__resolve(collision, body, other_body);
+        Collision__resolve(&collision, body, other_body);
 
         // Check for game specific resolutions.
-        if (float__eq(collision->normal.x, 0) &&
-            float__eq(collision->normal.y, -1)) {
-          // Keep the object on the ground but nudge it a bit up so it doesn't
-          // collide immediately again.
+        if (Vector2__eq(collision.normal, UP)) {
           if (body->type == KINETIC && other_body->type == STATIC) {
             body->is_grounded = true;
             other_body->velocity.y = 0;
@@ -369,7 +373,6 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
             other_body->velocity.y = 0;
           }
         }
-        free(collision);
       }
     }
   }
@@ -401,6 +404,28 @@ void initialize_level(MorteGame *game) {
   game->gravity = 400;
 }
 
+/*
+ * Place a priest at the position (px,py) with offset (to_x, to_y) based on the
+ * size of its texture.
+ */
+void MorteGame__add_priest(MorteGame *self, float px, float py, float to_x,
+                           float to_y) {
+  Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
+  Texture2D eye_texture = LoadTexture("content/silma.png");
+
+  self->player = (Priest){
+      .texture = player_texture,
+      .eye_texture = eye_texture,
+      .body = PhysicsBody__new(KINETIC,
+                               (Rectangle){px + player_texture.width * to_x,
+                                           py + player_texture.height * to_y,
+                                           player_texture.width,
+                                           player_texture.height},
+                               100),
+  };
+  MorteGame__add_physics_body(self, self->player.body);
+}
+
 void load_content(MorteGame *game) {
   game->cursor = (Cursor){
       .position = {0, 0},
@@ -421,19 +446,8 @@ void load_content(MorteGame *game) {
     free(filename);
   }
 
-  Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
-  Texture2D eye_texture = LoadTexture("content/silma.png");
-  game->player = (Priest){
-      .texture = player_texture,
-      .eye_texture = eye_texture,
-      .body = PhysicsBody__new(
-          KINETIC,
-          (Rectangle){-game->level.bounds.width / 2 + player_texture.width,
-                      game->level.bounds.height - player_texture.height,
-                      player_texture.width, player_texture.height},
-          100),
-  };
-  MorteGame__add_physics_body(game, game->player.body);
+  MorteGame__add_priest(game, -game->level.bounds.width / 2,
+                        game->level.bounds.height, 1, -1);
 
   game->hud = (HUD){.border = LoadTexture("content/border.png")};
 
@@ -452,7 +466,8 @@ void load_content(MorteGame *game) {
 
 int main(void) {
 
-  InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Morte mysteria");
+  InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT,
+             "Morte Mysteria dom Domine dem Daemonium");
 
   SetTargetFPS(60);
   DisableCursor();
@@ -471,6 +486,8 @@ int main(void) {
 
     // Update.
     // -------------------------------------------------------------------------
+    MorteGame__update_physics(&game, delta);
+
     game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
 
     Animation__update(&game.cursor.animation, delta);
@@ -481,16 +498,13 @@ int main(void) {
       game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
       float target_relative_offset_x =
           game.camera.target.x / game.level.bounds.width;
-      printf("playerx %f\n%f / %f = %f\n", game.player.body->aabb.x,
-             game.camera.target.x, game.level.bounds.width,
-             target_relative_offset_x);
     }
 
     if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_P)) {
       is_debug_mode = !is_debug_mode;
     }
 
-    // Horizontal movement is instant.
+    // Horizontal movement control.
     if (IsKeyDown(KEY_D)) {
       game.player.body->force.x =
           50.0f * (game.player.body->is_grounded ? 1.0f : 0.1f);
@@ -501,13 +515,11 @@ int main(void) {
       game.player.body->force.x = 0;
     }
 
-    // Vertical movement is physics-based.
+    // Vertical movement control.
     if (IsKeyDown(KEY_SPACE) && game.player.body->is_grounded) {
       game.player.body->force.y -= 350;
       game.player.body->is_grounded = false;
     }
-
-    MorteGame__update_physics(&game, delta);
 
     // Update parallax according to updated camera target position.
     for (size_t i = 0; i < 2; i++) {
@@ -562,7 +574,6 @@ int main(void) {
     }
 
     EndDrawing();
-
     // -------------------------------------------------------------------------
   }
 
