@@ -88,7 +88,8 @@ PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
   return self;
 }
 
-/* Return if and how the bodies collide.
+/*
+ * Return if and how the bodies collide.
  *
  * ## Kudos:
  * -
@@ -146,26 +147,6 @@ void Collision__resolve(Collision *self, PhysicsBody *a, PhysicsBody *b) {
   }
 }
 
-enum UggyType { PRIEST = 0, SNAKE, WACKO, GULL, HAND };
-
-/*
- * Represents objects/characters animated in the game world.
- */
-typedef struct {
-  enum UggyType type;
-  PhysicsBody *body;
-  Texture2D texture;
-  Texture2D eye_texture;
-} Uggy;
-
-Uggy *Uggy__new(enum UggyType type, PhysicsBody *body, Texture2D texture) {
-  Uggy *self = malloc(sizeof(Uggy));
-  self->type = type;
-  self->body = body;
-  self->texture = texture;
-  return self;
-}
-
 enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
 
 enum AnimationTiming { LINEAR, EASE_IN, EASE_OUT };
@@ -174,20 +155,63 @@ typedef struct {
   enum AnimationState state;
   size_t frame_count;
   size_t current_frame;
-  unsigned length_millis;
-  unsigned elapsed_millis;
+  // Duration of the whole animation in milliseconds.
+  unsigned length_ms;
+  unsigned elapsed_ms;
   enum AnimationTiming timing;
   Texture2D *frames;
 } Animation;
+
+/*
+ * Copy `frames` for animation.
+ */
+Animation Animation__from_frames(size_t frame_count, Texture2D *frames,
+                                 unsigned length_ms) {
+  Animation self = {
+      .state = STOPPED,
+      .frame_count = frame_count,
+      .frames = malloc(frame_count * sizeof(Texture2D)),
+      .current_frame = 0,
+      .length_ms = length_ms,
+      .elapsed_ms = 0,
+      .timing = LINEAR,
+  };
+
+  for (size_t i = 0; i < self.frame_count; i++) {
+    self.frames[i] = frames[i];
+  }
+
+  return self;
+}
+/*
+ * Initialize and load animation frames from a string template filepath using
+ * zero-left-padded indexes [0, `frame_count`).
+ *
+ * NOTE: This method assumes using the `template` will yield constant length
+ * strings (as per the padding condition).
+ *
+ * NOTE: The maximum path length cannot exceed 500 ASCII-characters.
+ */
+Animation Animation__from_path_template(const char *template,
+                                        size_t frame_count,
+                                        unsigned length_ms) {
+  Texture2D frames[frame_count];
+  // Limit path length to 500 characters.
+  char filename[501];
+  for (size_t i = 0; i < frame_count; i++) {
+    sprintf(filename, template, (int)i + 1);
+    frames[i] = LoadTexture(filename);
+  }
+  return Animation__from_frames(frame_count, frames, length_ms);
+}
 
 void Animation__update(Animation *self, float delta) {
   if (self->state == STOPPED) {
     return;
   }
 
-  self->elapsed_millis += 1000 * delta;
-  float t =
-      fmin(1.0f, (float)self->elapsed_millis / (float)self->length_millis);
+  self->elapsed_ms += 1000 * delta;
+  float t = fmin(1.0f, (float)self->elapsed_ms / (float)self->length_ms);
 
   switch (self->timing) {
   case LINEAR:
@@ -203,7 +227,7 @@ void Animation__update(Animation *self, float delta) {
 
   if (self->current_frame >= self->frame_count) {
     self->current_frame = 0;
-    self->elapsed_millis = 0;
+    self->elapsed_ms = 0;
 
     if (self->state == PLAYING_ONCE) {
       self->state = STOPPED;
@@ -217,6 +241,26 @@ void Animation__free(Animation *self) {
   }
 
   free(self->frames);
+}
+
+enum UggyType { PRIEST = 0, SNAKE, WACKO, GULL, HAND };
+
+/*
+ * Represents objects/characters animated in the game world.
+ */
+typedef struct {
+  enum UggyType type;
+  PhysicsBody *body;
+  Animation animation;
+  Texture2D eye_texture;
+} Uggy;
+
+Uggy *Uggy__new(enum UggyType type, PhysicsBody *body, Animation animation) {
+  Uggy *self = malloc(sizeof(Uggy));
+  self->type = type;
+  self->body = body;
+  self->animation = animation;
+  return self;
 }
 
 typedef struct {
@@ -252,9 +296,9 @@ void Uggy__draw_priest_eye(Uggy *self, Camera2D camera, Cursor cursor,
                                  self->eye_texture.height / 2};
   // Eye in Priest coordinates.
   Vector2 relative_eye_pos = {
-      self->texture.width / 2 +
-          (left_side ? -self->texture.width * 0.15 : 1.0f),
-      self->texture.height * 0.06};
+      self->animation.frames[0].width / 2 +
+          (left_side ? -self->animation.frames[0].width * 0.15 : 1.0f),
+      self->animation.frames[0].height * 0.06};
 
   // Eye in world coordinates.
   Vector2 absolute_eye_pos =
@@ -272,7 +316,8 @@ void Uggy__draw_priest_eye(Uggy *self, Camera2D camera, Cursor cursor,
 }
 
 void Uggy__draw(Uggy *self, Camera2D camera, Cursor cursor) {
-  DrawTexture(self->texture, self->body->aabb.x, self->body->aabb.y, WHITE);
+  DrawTexture(self->animation.frames[0], self->body->aabb.x, self->body->aabb.y,
+              WHITE);
 
   switch (self->type) {
   case PRIEST:
@@ -312,16 +357,15 @@ typedef struct {
 void MorteGame__free(MorteGame *self) {
   Animation__free(&self->cursor.animation);
 
-  UnloadTexture(self->player->texture);
-  UnloadTexture(self->player->eye_texture);
-
   for (size_t i = 0; i < self->physics_body_count; i++) {
     free(self->physics_bodies[i]);
   }
   free(self->physics_bodies);
 
+  UnloadTexture(self->player->eye_texture);
+
   for (size_t i = 0; i < self->uggy_count; i++) {
-    UnloadTexture(self->uggies[i]->texture);
+    Animation__free(&self->uggies[i]->animation);
     free(self->uggies[i]);
   }
   free(self->uggies);
@@ -466,7 +510,7 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
                         self->level.bounds.height - player_texture.height,
                         player_texture.width, player_texture.height},
             100),
-        player_texture);
+        Animation__from_frames(1, &player_texture, 0));
 
     // Specialization.
     self->player->eye_texture = eye_texture;
@@ -487,7 +531,7 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
                                      self->player->body->aabb.y - 50,
                                      gull_texture.width, gull_texture.height},
                          20),
-        gull_texture);
+        Animation__from_frames(1, &gull_texture, 0));
     MorteGame__add_uggy(self, gull);
     break;
   case HAND:
@@ -496,24 +540,12 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
 }
 
 void load_content(MorteGame *game) {
-  game->cursor = (Cursor){
-      .position = {0, 0},
-      .animation = {
-          .state = LOOPING,
-          .frame_count = ANIMATION_FRAME_COUNT_CURSOR,
-          .frames = malloc(ANIMATION_FRAME_COUNT_CURSOR * sizeof(Texture2D)),
-          .current_frame = 0,
-          .length_millis = ANIMATION_LENGTH_MILLIS_CURSOR,
-          .elapsed_millis = 0,
-          .timing = LINEAR,
-      }};
-
-  for (size_t i = 0; i < game->cursor.animation.frame_count; i++) {
-    char *filename = malloc((25 + 2 + 4 + 1) * sizeof(char));
-    sprintf(filename, "content/kursori/kursori00%02d.png", (int)i + 1);
-    game->cursor.animation.frames[i] = LoadTexture(filename);
-    free(filename);
-  }
+  game->cursor = (Cursor){.position = {0, 0},
+                          .animation = Animation__from_path_template(
+                              "content/kursori/kursori00%02d.png",
+                              ANIMATION_FRAME_COUNT_CURSOR,
+                              ANIMATION_LENGTH_MILLIS_CURSOR)};
+  game->cursor.animation.state = LOOPING;
 
   MorteGame__spawn_uggy(game, PRIEST);
 
@@ -569,7 +601,7 @@ int main(void) {
 
       // Enemy spawn control.
       for (size_t i = SNAKE; i < HAND; i++) {
-        if (IsKeyPressed(KEY_ONE + i)) {
+        if (IsKeyPressed(KEY_ZERO + i)) {
           MorteGame__spawn_uggy(&game, i);
         }
       }
