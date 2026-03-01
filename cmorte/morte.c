@@ -50,8 +50,7 @@ bool Vector2__eq(Vector2 a, Vector2 b) {
   return float__eq(a.x, b.x) && float__eq(a.y, b.y);
 }
 
-enum EnemyTag { SNAKE = 0, WACKO, GULL, HAND };
-enum PropTag { GROUND };
+enum PropType { GROUND };
 
 typedef struct {
   // This replaces using NULL as a flag if there was no collision.
@@ -147,13 +146,21 @@ void Collision__resolve(Collision *self, PhysicsBody *a, PhysicsBody *b) {
   }
 }
 
+enum UggyType { PRIEST = 0, SNAKE, WACKO, GULL, HAND };
+
+/*
+ * Represents objects/characters animated in the game world.
+ */
 typedef struct {
+  enum UggyType type;
   PhysicsBody *body;
   Texture2D texture;
-} RenderBody;
+  Texture2D eye_texture;
+} Uggy;
 
-RenderBody *RenderBody__new(PhysicsBody *body, Texture2D texture) {
-  RenderBody *self = malloc(sizeof(RenderBody));
+Uggy *Uggy__new(enum UggyType type, PhysicsBody *body, Texture2D texture) {
+  Uggy *self = malloc(sizeof(Uggy));
+  self->type = type;
   self->body = body;
   self->texture = texture;
   return self;
@@ -213,7 +220,7 @@ void Animation__free(Animation *self) {
 }
 
 typedef struct {
-  enum PropTag tag;
+  enum PropType type;
   Rectangle bounds;
   PhysicsBody *body;
 } Level;
@@ -233,25 +240,13 @@ typedef struct {
   Vector2 offset;
 } ChildObject;
 
-typedef struct {
-  Texture2D texture;
-  Texture2D eye_texture;
-  PhysicsBody *body;
-} Priest;
-
-typedef struct {
-  enum EnemyTag tag;
-  Texture2D texture;
-  PhysicsBody *body;
-} Gull;
-
 float degrees_between(Vector2 from, Vector2 to) {
   float radians = atan2(to.y - from.y, to.x - from.x);
   return radians * (180.0f / PI);
 }
 
-void Priest__draw_eye(Priest *self, Camera2D camera, Cursor cursor,
-                      bool left_side) {
+void Uggy__draw_priest_eye(Uggy *self, Camera2D camera, Cursor cursor,
+                           bool left_side) {
   // Eye in own coordinates.
   Vector2 independent_eye_pos = {self->eye_texture.width / 2,
                                  self->eye_texture.height / 2};
@@ -276,11 +271,23 @@ void Priest__draw_eye(Priest *self, Camera2D camera, Cursor cursor,
       WHITE);
 }
 
-void Priest__draw(Priest *self, Camera2D camera, Cursor cursor) {
+void Uggy__draw(Uggy *self, Camera2D camera, Cursor cursor) {
   DrawTexture(self->texture, self->body->aabb.x, self->body->aabb.y, WHITE);
 
-  Priest__draw_eye(self, camera, cursor, true);
-  Priest__draw_eye(self, camera, cursor, false);
+  switch (self->type) {
+  case PRIEST:
+    Uggy__draw_priest_eye(self, camera, cursor, true);
+    Uggy__draw_priest_eye(self, camera, cursor, false);
+    break;
+  case SNAKE:
+    break;
+  case WACKO:
+    break;
+  case GULL:
+    break;
+  case HAND:
+    break;
+  }
 }
 
 typedef struct {
@@ -293,11 +300,11 @@ typedef struct {
   float gravity;
   Cursor cursor;
   Camera2D camera;
-  Priest player;
+  Uggy *player;
   size_t physics_body_count;
-  size_t render_body_count;
+  size_t uggy_count;
   PhysicsBody **physics_bodies;
-  RenderBody **render_bodies;
+  Uggy **uggies;
   Background backgrounds[BACKGROUND_TEXTURE_COUNT];
   HUD hud;
 } MorteGame;
@@ -305,19 +312,19 @@ typedef struct {
 void MorteGame__free(MorteGame *self) {
   Animation__free(&self->cursor.animation);
 
-  UnloadTexture(self->player.texture);
-  UnloadTexture(self->player.eye_texture);
+  UnloadTexture(self->player->texture);
+  UnloadTexture(self->player->eye_texture);
 
   for (size_t i = 0; i < self->physics_body_count; i++) {
     free(self->physics_bodies[i]);
   }
   free(self->physics_bodies);
 
-  for (size_t i = 0; i < self->render_body_count; i++) {
-    UnloadTexture(self->render_bodies[i]->texture);
-    free(self->render_bodies[i]);
+  for (size_t i = 0; i < self->uggy_count; i++) {
+    UnloadTexture(self->uggies[i]->texture);
+    free(self->uggies[i]);
   }
-  free(self->render_bodies);
+  free(self->uggies);
 
   for (size_t i = 0; i < BACKGROUND_TEXTURE_COUNT; i++) {
     UnloadTexture(self->backgrounds[i].texture);
@@ -326,19 +333,19 @@ void MorteGame__free(MorteGame *self) {
   UnloadTexture(self->hud.border);
 }
 
-void MorteGame__add_render_body(MorteGame *self, RenderBody *body) {
-  self->render_bodies = realloc(
-      self->render_bodies, (self->render_body_count + 1) * sizeof(RenderBody));
-  self->render_bodies[self->render_body_count] = body;
-  self->render_body_count += 1;
-}
-
 void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   self->physics_bodies =
       realloc(self->physics_bodies,
               (self->physics_body_count + 1) * sizeof(PhysicsBody));
   self->physics_bodies[self->physics_body_count] = body;
   self->physics_body_count += 1;
+}
+
+void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
+  self->uggies = realloc(self->uggies, (self->uggy_count + 1) * sizeof(Uggy));
+  self->uggies[self->uggy_count] = uggy;
+  self->uggy_count += 1;
+  MorteGame__add_physics_body(self, uggy->body);
 }
 
 /*
@@ -424,7 +431,7 @@ void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
 void initialize_level(MorteGame *game) {
   Rectangle level_bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT};
   game->level = (Level){
-      .tag = GROUND,
+      .type = GROUND,
       .bounds = level_bounds,
       .body = PhysicsBody__new(
           STATIC,
@@ -438,40 +445,50 @@ void initialize_level(MorteGame *game) {
   game->gravity = 400;
 }
 
-void MorteGame__spawn_priest(MorteGame *self) {
-  Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
-  Texture2D eye_texture = LoadTexture("content/silma.png");
-  self->player = (Priest){
-      .texture = player_texture,
-      .eye_texture = eye_texture,
-      .body = PhysicsBody__new(
-          KINETIC,
-          (Rectangle){-self->level.bounds.width / 2 + player_texture.width,
-                      self->level.bounds.height - player_texture.height,
-                      player_texture.width, player_texture.height},
-          100),
-  };
-  MorteGame__add_physics_body(self, self->player.body);
-}
-
-void MorteGame__spawn_enemy(MorteGame *self, enum EnemyTag type) {
+void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
   switch (type) {
+  case PRIEST:
+    if (self->player != NULL) {
+      puts("\033[31mAttempted adding player twice\033[0m");
+      exit(1);
+    }
+
+    // Loading content.
+    Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
+    Texture2D eye_texture = LoadTexture("content/silma.png");
+
+    // Initialization.
+    self->player = Uggy__new(
+        PRIEST,
+        PhysicsBody__new(
+            KINETIC,
+            (Rectangle){-self->level.bounds.width / 2 + player_texture.width,
+                        self->level.bounds.height - player_texture.height,
+                        player_texture.width, player_texture.height},
+            100),
+        player_texture);
+
+    // Specialization.
+    self->player->eye_texture = eye_texture;
+
+    // Adding to sim.
+    MorteGame__add_uggy(self, self->player);
+    break;
   case SNAKE:
     break;
   case WACKO:
     break;
   case GULL:
     Texture2D gull_texture = LoadTexture("content/uggies/gull/lokki0001.png");
-    Gull gull = {.tag = GULL,
-                 .texture = gull_texture,
-                 .body = PhysicsBody__new(
-                     KINETIC,
-                     (Rectangle){self->player.body->aabb.x + 50,
-                                 self->player.body->aabb.y - 50,
-                                 gull_texture.width, gull_texture.height},
-                     20)};
-    MorteGame__add_physics_body(self, gull.body);
-    MorteGame__add_render_body(self, RenderBody__new(gull.body, gull.texture));
+    Uggy *gull = Uggy__new(
+        GULL,
+        PhysicsBody__new(KINETIC,
+                         (Rectangle){self->player->body->aabb.x + 50,
+                                     self->player->body->aabb.y - 50,
+                                     gull_texture.width, gull_texture.height},
+                         20),
+        gull_texture);
+    MorteGame__add_uggy(self, gull);
     break;
   case HAND:
     break;
@@ -498,7 +515,7 @@ void load_content(MorteGame *game) {
     free(filename);
   }
 
-  MorteGame__spawn_priest(game);
+  MorteGame__spawn_uggy(game, PRIEST);
 
   game->hud = (HUD){.border = LoadTexture("content/border.png")};
 
@@ -543,7 +560,7 @@ int main(void) {
 
     Animation__update(&game.cursor.animation, delta);
 
-    MorteGame__focus_view_on(&game, game.player.body->aabb);
+    MorteGame__focus_view_on(&game, game.player->body->aabb);
 
     if (is_debug_mode) {
       game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
@@ -553,7 +570,7 @@ int main(void) {
       // Enemy spawn control.
       for (size_t i = SNAKE; i < HAND; i++) {
         if (IsKeyPressed(KEY_ONE + i)) {
-          MorteGame__spawn_enemy(&game, i);
+          MorteGame__spawn_uggy(&game, i);
         }
       }
     }
@@ -564,19 +581,19 @@ int main(void) {
 
     // Horizontal movement control.
     if (IsKeyDown(KEY_D)) {
-      game.player.body->force.x =
-          50.0f * (game.player.body->is_grounded ? 1.0f : 0.1f);
+      game.player->body->force.x =
+          50.0f * (game.player->body->is_grounded ? 1.0f : 0.1f);
     } else if (IsKeyDown(KEY_A)) {
-      game.player.body->force.x =
-          -50.0f * (game.player.body->is_grounded ? 1.0f : 0.1f);
+      game.player->body->force.x =
+          -50.0f * (game.player->body->is_grounded ? 1.0f : 0.1f);
     } else {
-      game.player.body->force.x = 0;
+      game.player->body->force.x = 0;
     }
 
     // Vertical movement control.
-    if (IsKeyDown(KEY_SPACE) && game.player.body->is_grounded) {
-      game.player.body->force.y -= 350;
-      game.player.body->is_grounded = false;
+    if (IsKeyDown(KEY_SPACE) && game.player->body->is_grounded) {
+      game.player->body->force.y -= 350;
+      game.player->body->is_grounded = false;
     }
 
     // Update parallax according to updated camera target position.
@@ -599,11 +616,9 @@ int main(void) {
                   game.backgrounds[i].position.y, WHITE);
     }
 
-    Priest__draw(&game.player, game.camera, game.cursor);
-
-    for (size_t i = 0; i < game.render_body_count; i++) {
-      RenderBody *body = game.render_bodies[i];
-      DrawTexture(body->texture, body->body->aabb.x, body->body->aabb.y, WHITE);
+    for (size_t i = 0; i < game.uggy_count; i++) {
+      Uggy *uggy = game.uggies[i];
+      Uggy__draw(uggy, game.camera, game.cursor);
     }
 
     for (size_t i = 2; i < 4; i++) {
