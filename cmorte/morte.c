@@ -18,7 +18,7 @@
 #define WINDOW_HEIGHT 800
 #define WINDOW_WIDTH (WINDOW_HEIGHT * ASPECT_RATIO)
 #define LEVEL_HEIGHT 400
-#define LEVEL_WIDTH 2200
+#define LEVEL_WIDTH 2800
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
 #define BACKGROUND_TEXTURE_COUNT 3
 
@@ -472,8 +472,10 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
  * the `object` center.
  */
 void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
-  self->camera.target = (Vector2){object.x, object.y};
-  self->camera.offset = Vector2Scale(self->view_size, 0.5);
+  self->camera.target =
+      (Vector2){object.x + object.width / 2, object.y + object.height / 2};
+  self->camera.offset =
+      (Vector2){self->view_size.x / 2, self->view_size.y - object.height};
 }
 
 void initialize_level(MorteGame *game) {
@@ -624,7 +626,8 @@ int main(void) {
 
   MorteGame game = {0};
   game.camera = (Camera2D){0};
-  game.camera.zoom = WINDOW_HEIGHT / LEVEL_HEIGHT;
+  float window_scale = WINDOW_HEIGHT / LEVEL_HEIGHT;
+  game.camera.zoom = window_scale;
   game.view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT};
 
   initialize_level(&game);
@@ -666,9 +669,17 @@ int main(void) {
     MorteGame__focus_view_on(&game, game.player->body->aabb);
 
     // Update parallax according to updated camera target position.
+    float relative_level_offset_x = game.camera.target.x / LEVEL_WIDTH;
     for (size_t i = 0; i < 2; i++) {
-      Background background = game.backgrounds[i];
-      background.position.x = 0;
+      game.backgrounds[i].position.x =
+          // Follow camera.
+          game.camera.target.x -
+          game.backgrounds[i].texture.width / 2.0f
+          // Offset relative to own size.
+          + game.backgrounds[i].texture.width *
+                relative_level_offset_x
+                // Move opposite to camera travel direction (="scroll").
+                * -1.0f;
     }
     // -------------------------------------------------------------------------
 
@@ -689,14 +700,10 @@ int main(void) {
       Uggy__draw(game.uggies[i], game.camera, game.cursor);
     }
 
-    for (size_t i = 2; i < 4; i++) {
+    for (size_t i = 2; i < 3; i++) {
       DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].position.x,
                   game.backgrounds[i].position.y, WHITE);
     }
-
-    DrawTexture(game.hud.border,
-                game.camera.target.x - game.hud.border.width / 2,
-                game.camera.target.y - game.hud.border.height / 2, WHITE);
 
     DrawTexture(
         game.cursor.animation.frames[game.cursor.animation.current_frame],
@@ -714,6 +721,8 @@ int main(void) {
     }
 
     EndMode2D();
+
+    DrawTextureEx(game.hud.border, (Vector2){0}, 0, window_scale, WHITE);
 
     if (is_debug_mode) {
       DrawText("DEBUG", 45, 35, 50, GREEN);
