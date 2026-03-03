@@ -29,19 +29,94 @@
 
 // DEBUG
 // -----------------------------------------------------------------------------
-bool is_debug_mode = true;
+enum DEBUG_visual_type {
+  DOT,
+  RECTANGLE,
+  ARROW,
+};
 
-void debug__draw_point(float x, float y, Color color) {
-  int size = 12;
-  DrawRectangle(x - size / 2, y - size / 2, size, size, color);
+typedef struct {
+  enum DEBUG_visual_type type;
+  Color color;
+  Vector2 position;
+  Vector2 size;
+  bool is_bordered;
+  Vector2 direction;
+} DEBUG_visual;
+
+typedef struct {
+  size_t draw_queue_length;
+  DEBUG_visual *draw_queue;
+} DEBUG;
+
+void DEBUG__enqueue(DEBUG *self, DEBUG_visual object) {
+  self->draw_queue = realloc(self->draw_queue, (self->draw_queue_length + 1) *
+                                                   sizeof(DEBUG_visual));
+  self->draw_queue[self->draw_queue_length] = object;
+  self->draw_queue_length += 1;
 }
 
-void debug__draw_arrow(float start_x, float start_y, float dirx, float diry,
-                       Color color) {
-  float length = 20.0f;
-  Vector2 end_pos = (Vector2){start_x + dirx * length, start_y + diry * length};
-  DrawLineEx((Vector2){start_x, start_y}, end_pos, 3.0, color);
-  debug__draw_point(end_pos.x, end_pos.y, BLACK);
+void DEBUG__draw_point_(DEBUG *self, DEBUG_visual object) {
+  int size = 12;
+  DrawRectangle(object.position.x - size / 2, object.position.y - size / 2,
+                size, size, object.color);
+}
+
+void DEBUG__draw_point(DEBUG *self, float x, float y, Color color) {
+  DEBUG__enqueue(
+      self, (DEBUG_visual){.type = DOT, .color = color, .position = {x, y}});
+}
+
+void DEBUG__draw_arrow(DEBUG *self, float start_x, float start_y, float dirx,
+                       float diry, Color color) {
+  DEBUG__enqueue(self, (DEBUG_visual){.type = ARROW,
+                                      .color = color,
+                                      .position = {start_x, start_y},
+                                      .direction = {dirx, diry}});
+}
+
+void DEBUG__draw_bordered(DEBUG *self, Rectangle rec, Color color) {
+  DEBUG__enqueue(self, (DEBUG_visual){
+                           .type = RECTANGLE,
+                           .color = color,
+                           .position = {rec.x, rec.y},
+                           .size = {rec.width, rec.height},
+                           .is_bordered = true,
+                       });
+}
+
+void DEBUG__draw(DEBUG *self) {
+  for (size_t i = 0; i < self->draw_queue_length; i++) {
+    DEBUG_visual object = self->draw_queue[i];
+
+    switch (object.type) {
+    case DOT:
+      DEBUG__draw_point_(self, object);
+      break;
+    case RECTANGLE:
+      Color base_color = object.color;
+      Rectangle rec = (Rectangle){object.position.x, object.position.y,
+                                  object.size.x, object.size.y};
+      if (object.is_bordered) {
+        DrawRectangleLinesEx(rec, 3, object.color);
+        base_color = GetColor(ColorToInt(base_color) & 0xff00ff77);
+      }
+      DrawRectangleRec(rec, base_color);
+      break;
+    case ARROW:
+      float length = 20.0f;
+      Vector2 end_pos =
+          (Vector2){object.position.x + object.direction.x * length,
+                    object.position.y + object.direction.y * length};
+      DrawLineEx((Vector2){object.position.x, object.position.y}, end_pos, 3.0,
+                 object.color);
+      DEBUG__draw_point(self, object.position.x, object.position.y,
+                        object.color);
+      break;
+    }
+  }
+  // Refresh the drawing next round.
+  self->draw_queue_length = 0;
 }
 // -----------------------------------------------------------------------------
 
@@ -75,11 +150,6 @@ typedef struct {
   Vector2 force;
   bool is_grounded;
 } PhysicsBody;
-
-void debug__draw_body(PhysicsBody body, Color color) {
-  DrawRectangleLinesEx(body.aabb, 3, color);
-  DrawRectangleRec(body.aabb, GetColor(ColorToInt(color) & 0xff00ff77));
-}
 
 PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
                               float mass) {
@@ -368,6 +438,7 @@ typedef struct {
   Uggy **uggies;
   Background backgrounds[BACKGROUND_TEXTURE_COUNT];
   HUD hud;
+  DEBUG *debug;
 } MorteGame;
 
 void MorteGame__free(MorteGame *self) {
@@ -449,16 +520,11 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
       PhysicsBody *other_body = self->physics_bodies[j];
       Collision collision = PhysicsBody__colliding(body, *other_body);
       if (collision.happened) {
-        if (is_debug_mode) {
-          BeginDrawing();
-
-          BeginMode2D(self->camera);
-          debug__draw_body(*body, YELLOW);
-          debug__draw_body(*other_body, YELLOW);
-          debug__draw_arrow(body->aabb.x, body->aabb.y, collision.normal.x,
-                            collision.normal.y, YELLOW);
-          EndMode2D();
-          EndDrawing();
+        if (self->debug) {
+          DEBUG__draw_bordered(self->debug, body->aabb, YELLOW);
+          DEBUG__draw_bordered(self->debug, other_body->aabb, YELLOW);
+          DEBUG__draw_arrow(self->debug, body->aabb.x, body->aabb.y,
+                            collision.normal.x, collision.normal.y, YELLOW);
         }
 
         // Resolve collisions.
@@ -652,6 +718,10 @@ int main(void) {
   game.camera.zoom = window_scale;
   game.view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT};
 
+  // DEBUG
+  DEBUG debug_instance = {0};
+  game.debug = &debug_instance;
+
   initialize_level(&game);
 
   load_content(&game);
@@ -665,7 +735,7 @@ int main(void) {
 
     game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
 
-    if (is_debug_mode) {
+    if (game.debug) {
       game.constants.player_walk_speed = 500.0;
 
       game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
@@ -683,7 +753,11 @@ int main(void) {
     }
 
     if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_P)) {
-      is_debug_mode = !is_debug_mode;
+      if (game.debug) {
+        game.debug = NULL;
+      } else {
+        game.debug = &debug_instance;
+      }
     }
 
     for (size_t i = 0; i < game.uggy_count; i++) {
@@ -705,8 +779,10 @@ int main(void) {
           game.camera.target.x -
           game.backgrounds[i].texture.width / 2.0f
           // Offset relative to own size.
-          + game.backgrounds[i].texture.width * magic_alignment_factor *
+          + game.backgrounds[i].texture.width *
                 relative_level_offset_x
+                // Align the far-ends of the images with each other.
+                * magic_alignment_factor
                 // Move opposite to camera travel direction.
                 * -1.0f;
     }
@@ -738,22 +814,27 @@ int main(void) {
         game.cursor.animation.frames[game.cursor.animation.current_frame],
         game.cursor.position.x, game.cursor.position.y, WHITE);
 
-    if (is_debug_mode) {
+    if (game.debug) {
       for (size_t i = 0; i < game.physics_body_count; i++) {
-        debug__draw_body(*game.physics_bodies[i], MAGENTA);
+        DEBUG__draw_bordered(game.debug, game.physics_bodies[i]->aabb, MAGENTA);
       }
 
-      debug__draw_point(game.camera.target.x, game.camera.target.y, GREEN);
-      debug__draw_point(game.camera.target.x - game.camera.offset.x,
+      DEBUG__draw_point(game.debug, game.camera.target.x, game.camera.target.y,
+                        GREEN);
+      DEBUG__draw_point(game.debug, game.camera.target.x - game.camera.offset.x,
                         game.camera.target.y - game.camera.offset.y, SKYBLUE);
-      debug__draw_point(0, 0, WHITE);
+      DEBUG__draw_point(game.debug, 0, 0, WHITE);
+    }
+
+    if (game.debug) {
+      DEBUG__draw(game.debug);
     }
 
     EndMode2D();
 
     DrawTextureEx(game.hud.border, (Vector2){0}, 0, window_scale, WHITE);
 
-    if (is_debug_mode) {
+    if (game.debug) {
       DrawText("DEBUG", 45, 35, 50, GREEN);
     }
 
