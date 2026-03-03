@@ -472,10 +472,14 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
  * the `object` center.
  */
 void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
-  self->camera.target =
-      (Vector2){object.x + object.width / 2, object.y + object.height / 2};
-  self->camera.offset =
-      (Vector2){self->view_size.x / 2, self->view_size.y - object.height};
+  // Offset the target if moving too close to level edges.
+  self->camera.target = (Vector2){
+      Clamp(object.x + object.width / 2,
+            -LEVEL_WIDTH / 2 + self->view_size.x / (2 * self->camera.zoom),
+            LEVEL_WIDTH / 2 - self->view_size.x / (2 * self->camera.zoom)),
+      fmax(object.y + (object.height - LEVEL_HEIGHT), 0)};
+
+  self->camera.offset = (Vector2){self->view_size.x / 2, 0};
 }
 
 void initialize_level(MorteGame *game) {
