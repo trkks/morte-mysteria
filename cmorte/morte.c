@@ -36,10 +36,11 @@ void debug__draw_point(float x, float y, Color color) {
   DrawRectangle(x - size / 2, y - size / 2, size, size, color);
 }
 
-void debug__draw_line(float x, float y, float dirx, float diry, Color color) {
+void debug__draw_arrow(float start_x, float start_y, float dirx, float diry,
+                       Color color) {
   float length = 20.0f;
-  Vector2 end_pos = (Vector2){x + dirx * length, y + diry * length};
-  DrawLineEx((Vector2){x, y}, end_pos, 3.0, color);
+  Vector2 end_pos = (Vector2){start_x + dirx * length, start_y + diry * length};
+  DrawLineEx((Vector2){start_x, start_y}, end_pos, 3.0, color);
   debug__draw_point(end_pos.x, end_pos.y, BLACK);
 }
 // -----------------------------------------------------------------------------
@@ -344,6 +345,17 @@ typedef struct {
 } HUD;
 
 typedef struct {
+  float player_walk_speed;
+  float player_jump_speed;
+} MorteGameConstants;
+
+const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
+    .player_walk_speed = 50.0f,
+    .player_jump_speed = 350.0f,
+};
+
+typedef struct {
+  MorteGameConstants constants;
   Level level;
   Vector2 view_size;
   float gravity;
@@ -443,8 +455,8 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
           BeginMode2D(self->camera);
           debug__draw_body(*body, YELLOW);
           debug__draw_body(*other_body, YELLOW);
-          debug__draw_line(body->aabb.x, body->aabb.y, collision.normal.x,
-                           collision.normal.y, YELLOW);
+          debug__draw_arrow(body->aabb.x, body->aabb.y, collision.normal.x,
+                            collision.normal.y, YELLOW);
           EndMode2D();
           EndDrawing();
         }
@@ -485,6 +497,8 @@ void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
 void initialize_level(MorteGame *game) {
   srand(666);
   Rectangle level_bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT};
+  game->constants = DEFAULT_MORTE_GAME_CONSTANTS;
+
   game->level = (Level){
       .type = GROUND,
       .bounds = level_bounds,
@@ -559,20 +573,24 @@ void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
 
   switch (uggy->type) {
   case PRIEST:
+    // Player character input handling.
+
     // Horizontal movement control.
     if (IsKeyDown(KEY_D)) {
       self->player->body->force.x =
-          50.0f * (self->player->body->is_grounded ? 1.0f : 0.1f);
+          self->constants.player_walk_speed *
+          (self->player->body->is_grounded ? 1.0f : 0.1f);
     } else if (IsKeyDown(KEY_A)) {
       self->player->body->force.x =
-          -50.0f * (self->player->body->is_grounded ? 1.0f : 0.1f);
+          -self->constants.player_walk_speed *
+          (self->player->body->is_grounded ? 1.0f : 0.1f);
     } else {
       self->player->body->force.x = 0;
     }
 
     // Vertical movement control.
     if (IsKeyDown(KEY_SPACE) && self->player->body->is_grounded) {
-      self->player->body->force.y -= 350;
+      self->player->body->force.y -= self->constants.player_jump_speed;
       self->player->body->is_grounded = false;
     }
     break;
@@ -648,6 +666,8 @@ int main(void) {
     game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
 
     if (is_debug_mode) {
+      game.constants.player_walk_speed = 500.0;
+
       game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
       float target_relative_offset_x =
           game.camera.target.x / game.level.bounds.width;
@@ -658,6 +678,8 @@ int main(void) {
           MorteGame__spawn_uggy(&game, i);
         }
       }
+    } else {
+      game.constants = DEFAULT_MORTE_GAME_CONSTANTS;
     }
 
     if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_P)) {
@@ -675,14 +697,17 @@ int main(void) {
     // Update parallax according to updated camera target position.
     float relative_level_offset_x = game.camera.target.x / LEVEL_WIDTH;
     for (size_t i = 0; i < 2; i++) {
+      float magic_alignment_factor =
+          (double)LEVEL_WIDTH /
+          (2.0 * LEVEL_WIDTH - game.backgrounds[i].texture.width);
       game.backgrounds[i].position.x =
           // Follow camera.
           game.camera.target.x -
           game.backgrounds[i].texture.width / 2.0f
           // Offset relative to own size.
-          + game.backgrounds[i].texture.width *
+          + game.backgrounds[i].texture.width * magic_alignment_factor *
                 relative_level_offset_x
-                // Move opposite to camera travel direction (="scroll").
+                // Move opposite to camera travel direction.
                 * -1.0f;
     }
     // -------------------------------------------------------------------------
