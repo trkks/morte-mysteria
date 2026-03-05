@@ -98,7 +98,13 @@ void DEBUG__draw(DEBUG *self) {
       Rectangle rec = (Rectangle){object.position.x, object.position.y,
                                   object.size.x, object.size.y};
       if (object.is_bordered) {
-        DrawRectangleLinesEx(rec, 3, object.color);
+        // Make it so that the border sticks out of the shape a bit so that it
+        // can be seen even if right at the edge of the view frame.
+        rec.x -= 2.5f;
+        rec.y -= 2.5f;
+        rec.width += 5.0f;
+        rec.height += 5.0f;
+        DrawRectangleLinesEx(rec, 5, object.color);
         base_color = GetColor(ColorToInt(base_color) & 0xff00ff77);
       }
       DrawRectangleRec(rec, base_color);
@@ -129,8 +135,6 @@ bool float__is_positive(float a) { return !float__eq(a, 0) && -E < a; }
 bool Vector2__eq(Vector2 a, Vector2 b) {
   return float__eq(a.x, b.x) && float__eq(a.y, b.y);
 }
-
-enum PropType { GROUND };
 
 typedef struct {
   // This replaces using NULL as a flag if there was no collision.
@@ -327,6 +331,7 @@ typedef struct {
   enum UggyType type;
   PhysicsBody *body;
   Animation animation;
+  // For PRIEST type.
   Texture2D eye_texture;
 } Uggy;
 
@@ -338,11 +343,16 @@ Uggy *Uggy__new(enum UggyType type, PhysicsBody *body, Animation animation) {
   return self;
 }
 
+enum PropType { LOOT };
+
+/*
+ * Represents objects/items stationary in the game world.
+ */
 typedef struct {
   enum PropType type;
-  Rectangle bounds;
   PhysicsBody *body;
-} Level;
+  Animation animation;
+} Prop;
 
 typedef struct {
   Vector2 position;
@@ -426,7 +436,8 @@ const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
 
 typedef struct {
   MorteGameConstants constants;
-  Level level;
+  // Bounds consisting of ground, "ceiling" and two vertical walls.
+  PhysicsBody *level_bounds[4];
   Vector2 view_size;
   float gravity;
   Cursor cursor;
@@ -551,31 +562,36 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
  */
 void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
   // Offset the target if moving too close to level edges.
-  self->camera.target = (Vector2){
-      Clamp(object.x + object.width / 2,
-            -LEVEL_WIDTH / 2 + self->view_size.x / (2 * self->camera.zoom),
-            LEVEL_WIDTH / 2 - self->view_size.x / (2 * self->camera.zoom)),
-      fmax(object.y + (object.height - LEVEL_HEIGHT), 0)};
+  self->camera.target =
+      (Vector2){Clamp(object.x + object.width / 2,
+                      -LEVEL_WIDTH / 2 + self->view_size.x / 4,
+                      LEVEL_WIDTH / 2 - self->view_size.x / 4),
+                fmax(object.y + (object.height - LEVEL_HEIGHT), 0)};
 
   self->camera.offset = (Vector2){self->view_size.x / 2, 0};
 }
 
 void initialize_level(MorteGame *game) {
   srand(666);
-  Rectangle level_bounds = {0, 0, LEVEL_WIDTH, LEVEL_HEIGHT};
   game->constants = DEFAULT_MORTE_GAME_CONSTANTS;
 
-  game->level = (Level){
-      .type = GROUND,
-      .bounds = level_bounds,
-      .body = PhysicsBody__new(
-          STATIC,
-          (Rectangle){-level_bounds.width / 2, level_bounds.height,
-                      level_bounds.width, level_bounds.height},
-          0),
-  };
+  // Ground.
+  game->level_bounds[0] = PhysicsBody__new(
+      STATIC, (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT, LEVEL_WIDTH, 50}, 0);
+  // Ceiling.
+  game->level_bounds[1] = PhysicsBody__new(
+      STATIC, (Rectangle){-LEVEL_WIDTH / 2, -50, LEVEL_WIDTH, 50}, 0);
+  // Left wall.
+  game->level_bounds[2] = PhysicsBody__new(
+      STATIC, (Rectangle){-LEVEL_WIDTH / 2 - 50, 0, 50, LEVEL_HEIGHT}, 0);
+  // Right wall.
+  game->level_bounds[3] = PhysicsBody__new(
+      STATIC, (Rectangle){LEVEL_WIDTH / 2, 0, 50, LEVEL_HEIGHT}, 0);
 
-  MorteGame__add_physics_body(game, game->level.body);
+  MorteGame__add_physics_body(game, game->level_bounds[0]);
+  MorteGame__add_physics_body(game, game->level_bounds[1]);
+  MorteGame__add_physics_body(game, game->level_bounds[2]);
+  MorteGame__add_physics_body(game, game->level_bounds[3]);
 
   game->gravity = 400;
 }
@@ -593,15 +609,15 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
     Texture2D eye_texture = LoadTexture("content/silma.png");
 
     // Initialization.
-    self->player = Uggy__new(
-        PRIEST,
-        PhysicsBody__new(
-            KINETIC,
-            (Rectangle){-self->level.bounds.width / 2 + player_texture.width,
-                        self->level.bounds.height - player_texture.height,
-                        player_texture.width, player_texture.height},
-            100),
-        Animation__from_frames(1, &player_texture, 0));
+    self->player =
+        Uggy__new(PRIEST,
+                  PhysicsBody__new(
+                      KINETIC,
+                      (Rectangle){-LEVEL_WIDTH / 2 + player_texture.width,
+                                  LEVEL_HEIGHT - player_texture.height,
+                                  player_texture.width, player_texture.height},
+                      100),
+                  Animation__from_frames(1, &player_texture, 0));
 
     // Specialization.
     self->player->eye_texture = eye_texture;
@@ -701,8 +717,7 @@ void load_content(MorteGame *game) {
   Texture2D background2 = LoadTexture("content/tausta/edusta.png");
   game->backgrounds[2] = (Background){
       .texture = background2,
-      .position = {-background2.width / 2,
-                   game->level.bounds.height - background2.height}};
+      .position = {-background2.width / 2, LEVEL_HEIGHT - background2.height}};
 }
 
 int main(void) {
@@ -739,8 +754,6 @@ int main(void) {
       game.constants.player_walk_speed = 500.0;
 
       game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
-      float target_relative_offset_x =
-          game.camera.target.x / game.level.bounds.width;
 
       // Enemy spawn control.
       for (size_t i = SNAKE; i < HAND; i++) {
