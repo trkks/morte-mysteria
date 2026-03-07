@@ -41,7 +41,7 @@ typedef struct {
   Vector2 position;
   Vector2 size;
   bool is_bordered;
-  Vector2 direction;
+  Vector2 end_position;
 } DEBUG_visual;
 
 typedef struct {
@@ -56,10 +56,9 @@ void DEBUG__enqueue(DEBUG *self, DEBUG_visual object) {
   self->draw_queue_length += 1;
 }
 
-void DEBUG__draw_point_(DEBUG *self, DEBUG_visual object) {
+void DEBUG__draw_point_(DEBUG *self, Vector2 pos, Color color) {
   int size = 12;
-  DrawRectangle(object.position.x - size / 2, object.position.y - size / 2,
-                size, size, object.color);
+  DrawRectangle(pos.x - size / 2, pos.y - size / 2, size, size, color);
 }
 
 void DEBUG__draw_point(DEBUG *self, float x, float y, Color color) {
@@ -67,12 +66,24 @@ void DEBUG__draw_point(DEBUG *self, float x, float y, Color color) {
       self, (DEBUG_visual){.type = DOT, .color = color, .position = {x, y}});
 }
 
-void DEBUG__draw_arrow(DEBUG *self, float start_x, float start_y, float dirx,
-                       float diry, Color color) {
+void DEBUG__draw_direction(DEBUG *self, float start_x, float start_y,
+                           float dir_x, float dir_y, Color color) {
+  float length = 66.0f;
+  Vector2 end_position =
+      (Vector2){start_x + dir_x * length, start_y + dir_y * length};
+
   DEBUG__enqueue(self, (DEBUG_visual){.type = ARROW,
                                       .color = color,
                                       .position = {start_x, start_y},
-                                      .direction = {dirx, diry}});
+                                      .end_position = end_position});
+}
+
+void DEBUG__draw_arrow(DEBUG *self, float start_x, float start_y, float end_x,
+                       float end_y, Color color) {
+  DEBUG__enqueue(self, (DEBUG_visual){.type = ARROW,
+                                      .color = color,
+                                      .position = {start_x, start_y},
+                                      .end_position = {end_x, end_y}});
 }
 
 void DEBUG__draw_bordered(DEBUG *self, Rectangle rec, Color color) {
@@ -91,7 +102,7 @@ void DEBUG__draw(DEBUG *self) {
 
     switch (object.type) {
     case DOT:
-      DEBUG__draw_point_(self, object);
+      DEBUG__draw_point_(self, object.position, object.color);
       break;
     case RECTANGLE:
       Color base_color = object.color;
@@ -110,19 +121,36 @@ void DEBUG__draw(DEBUG *self) {
       DrawRectangleRec(rec, base_color);
       break;
     case ARROW:
-      float length = 20.0f;
-      Vector2 end_pos =
-          (Vector2){object.position.x + object.direction.x * length,
-                    object.position.y + object.direction.y * length};
-      DrawLineEx((Vector2){object.position.x, object.position.y}, end_pos, 3.0,
-                 object.color);
-      DEBUG__draw_point(self, object.position.x, object.position.y,
-                        object.color);
+      float size = 6.0f;
+      DrawLineEx(object.position, object.end_position, size, object.color);
+      // The arrow tip's edge on the left side of the direction line.
+      //    \
+      // -----
+      //
+      float edge_length = 15.0f;
+      Vector2 segment = Vector2Subtract(object.end_position, object.position);
+      float arrow_angle = atan2(segment.y, segment.x);
+      float l = arrow_angle + PI / 4.0f;
+      DrawLineEx(object.end_position,
+                 (Vector2){
+                     object.end_position.x - cos(l) * edge_length,
+                     object.end_position.y - sin(l) * edge_length,
+                 },
+                 size / 2, object.color);
+      // Then the right side.
+      //    \
+      // -----
+      //    /
+      float r = arrow_angle - PI / 4.0f;
+      DrawLineEx(object.end_position,
+                 (Vector2){
+                     object.end_position.x - cos(r) * edge_length,
+                     object.end_position.y - sin(r) * edge_length,
+                 },
+                 size / 2, object.color);
       break;
     }
   }
-  // Refresh debug drawing for next round.
-  self->draw_queue_length = 0;
 }
 // -----------------------------------------------------------------------------
 
@@ -535,8 +563,10 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
         if (self->debug) {
           DEBUG__draw_bordered(self->debug, body->aabb, YELLOW);
           DEBUG__draw_bordered(self->debug, other_body->aabb, YELLOW);
-          DEBUG__draw_arrow(self->debug, body->aabb.x, body->aabb.y,
-                            collision.normal.x, collision.normal.y, YELLOW);
+          DEBUG__draw_direction(self->debug,
+                                body->aabb.x + body->aabb.width / 2,
+                                body->aabb.y + body->aabb.height / 2,
+                                collision.normal.x, collision.normal.y, YELLOW);
         }
 
         // Resolve collisions.
@@ -554,6 +584,10 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
         }
       }
     }
+
+    if (self->debug) {
+      DEBUG__draw_bordered(self->debug, self->physics_bodies[i]->aabb, MAGENTA);
+    }
   }
 }
 
@@ -570,6 +604,15 @@ void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
                 fmax(object.y + (object.height - LEVEL_HEIGHT), 0)};
 
   self->camera.offset = (Vector2){self->view_size.x / 2, 0};
+
+  if (self->debug) {
+    DEBUG__draw_point(self->debug, self->camera.target.x, self->camera.target.y,
+                      GREEN);
+    DEBUG__draw_point(self->debug,
+                      self->camera.target.x - self->camera.offset.x,
+                      self->camera.target.y - self->camera.offset.y, SKYBLUE);
+    DEBUG__draw_point(self->debug, 0, 0, WHITE);
+  }
 }
 
 void initialize_level(MorteGame *game) {
@@ -723,19 +766,6 @@ void MorteGame__draw(MorteGame *self) {
       self->cursor.position.x, self->cursor.position.y, WHITE);
 
   if (self->debug) {
-    for (size_t i = 0; i < self->physics_body_count; i++) {
-      DEBUG__draw_bordered(self->debug, self->physics_bodies[i]->aabb, MAGENTA);
-    }
-
-    DEBUG__draw_point(self->debug, self->camera.target.x, self->camera.target.y,
-                      GREEN);
-    DEBUG__draw_point(self->debug,
-                      self->camera.target.x - self->camera.offset.x,
-                      self->camera.target.y - self->camera.offset.y, SKYBLUE);
-    DEBUG__draw_point(self->debug, 0, 0, WHITE);
-  }
-
-  if (self->debug) {
     DEBUG__draw(self->debug);
   }
 
@@ -760,7 +790,6 @@ void MorteGame__draw(MorteGame *self) {
 
 /* Perform game logic updates. */
 void MorteGame__update(MorteGame *self, float delta) {
-
   MorteGame__update_physics(self, delta);
 
   self->cursor.position = GetScreenToWorld2D(GetMousePosition(), self->camera);
@@ -876,6 +905,11 @@ int main(void) {
       continue;
     }
     // -------------------------------------------------------------------------
+
+    // Refresh debug drawing ready for this next frame frame.
+    if (game.debug) {
+      game.debug->draw_queue_length = 0;
+    }
 
     MorteGame__update(&game, delta);
 
