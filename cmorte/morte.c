@@ -121,7 +121,7 @@ void DEBUG__draw(DEBUG *self) {
       break;
     }
   }
-  // Refresh the drawing next round.
+  // Refresh debug drawing for next round.
   self->draw_queue_length = 0;
 }
 // -----------------------------------------------------------------------------
@@ -697,6 +697,102 @@ void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
   }
 }
 
+void MorteGame__draw(MorteGame *self) {
+  BeginDrawing();
+
+  ClearBackground(BACKGROUND_COLOR);
+
+  BeginMode2D(self->camera);
+
+  for (size_t i = 0; i < 2; i++) {
+    DrawTexture(self->backgrounds[i].texture, self->backgrounds[i].position.x,
+                self->backgrounds[i].position.y, WHITE);
+  }
+
+  for (size_t i = 0; i < self->uggy_count; i++) {
+    Uggy__draw(self->uggies[i], self->camera, self->cursor);
+  }
+
+  for (size_t i = 2; i < 3; i++) {
+    DrawTexture(self->backgrounds[i].texture, self->backgrounds[i].position.x,
+                self->backgrounds[i].position.y, WHITE);
+  }
+
+  DrawTexture(
+      self->cursor.animation.frames[self->cursor.animation.current_frame],
+      self->cursor.position.x, self->cursor.position.y, WHITE);
+
+  if (self->debug) {
+    for (size_t i = 0; i < self->physics_body_count; i++) {
+      DEBUG__draw_bordered(self->debug, self->physics_bodies[i]->aabb, MAGENTA);
+    }
+
+    DEBUG__draw_point(self->debug, self->camera.target.x, self->camera.target.y,
+                      GREEN);
+    DEBUG__draw_point(self->debug,
+                      self->camera.target.x - self->camera.offset.x,
+                      self->camera.target.y - self->camera.offset.y, SKYBLUE);
+    DEBUG__draw_point(self->debug, 0, 0, WHITE);
+  }
+
+  if (self->debug) {
+    DEBUG__draw(self->debug);
+  }
+
+  EndMode2D();
+
+  DrawTextureEx(self->hud.border, (Vector2){0}, 0, self->camera.zoom, WHITE);
+
+  if (self->debug) {
+    DrawText("DEBUG", 45, 35, 50, GREEN);
+  }
+
+  if (self->is_paused) {
+    char *text = "PAUSED";
+    int font_size = 50;
+    int text_width = MeasureText(text, font_size);
+    DrawText(text, WINDOW_WIDTH / 2 - text_width / 2, WINDOW_HEIGHT / 2,
+             font_size, RED);
+  }
+
+  EndDrawing();
+}
+
+/* Perform game logic updates. */
+void MorteGame__update(MorteGame *self, float delta) {
+
+  MorteGame__update_physics(self, delta);
+
+  self->cursor.position = GetScreenToWorld2D(GetMousePosition(), self->camera);
+
+  for (size_t i = 0; i < self->uggy_count; i++) {
+    MorteGame__update_uggy(self, self->uggies[i], delta);
+  }
+
+  Animation__update(&self->cursor.animation, delta);
+
+  MorteGame__focus_view_on(self, self->player->body->aabb);
+
+  // Update parallax according to updated camera target position.
+  float relative_level_offset_x = self->camera.target.x / LEVEL_WIDTH;
+  for (size_t i = 0; i < 2; i++) {
+    float magic_alignment_factor =
+        (double)LEVEL_WIDTH /
+        (2.0 * LEVEL_WIDTH - self->backgrounds[i].texture.width);
+    self->backgrounds[i].position.x =
+        // Follow camera.
+        self->camera.target.x -
+        self->backgrounds[i].texture.width / 2.0f
+        // Offset relative to own size.
+        + self->backgrounds[i].texture.width *
+              relative_level_offset_x
+              // Align the far-ends of the images with each other.
+              * magic_alignment_factor
+              // Move opposite to camera travel direction.
+              * -1.0f;
+  }
+}
+
 void load_content(MorteGame *game) {
   game->cursor = (Cursor){.position = {0, 0},
                           .animation = Animation__from_path_template(
@@ -775,105 +871,15 @@ int main(void) {
     }
 
     if (game.is_paused) {
-      goto render;
+      MorteGame__draw(&game);
+      // Skip game logic updates.
+      continue;
     }
     // -------------------------------------------------------------------------
 
-    // Game logic updates.
-    // -------------------------------------------------------------------------
-    MorteGame__update_physics(&game, delta);
+    MorteGame__update(&game, delta);
 
-    game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
-
-    for (size_t i = 0; i < game.uggy_count; i++) {
-      MorteGame__update_uggy(&game, game.uggies[i], delta);
-    }
-
-    Animation__update(&game.cursor.animation, delta);
-
-    MorteGame__focus_view_on(&game, game.player->body->aabb);
-
-    // Update parallax according to updated camera target position.
-    float relative_level_offset_x = game.camera.target.x / LEVEL_WIDTH;
-    for (size_t i = 0; i < 2; i++) {
-      float magic_alignment_factor =
-          (double)LEVEL_WIDTH /
-          (2.0 * LEVEL_WIDTH - game.backgrounds[i].texture.width);
-      game.backgrounds[i].position.x =
-          // Follow camera.
-          game.camera.target.x -
-          game.backgrounds[i].texture.width / 2.0f
-          // Offset relative to own size.
-          + game.backgrounds[i].texture.width *
-                relative_level_offset_x
-                // Align the far-ends of the images with each other.
-                * magic_alignment_factor
-                // Move opposite to camera travel direction.
-                * -1.0f;
-    }
-    // -------------------------------------------------------------------------
-
-    // Draw.
-    // -------------------------------------------------------------------------
-  render:
-    BeginDrawing();
-
-    ClearBackground(BACKGROUND_COLOR);
-
-    BeginMode2D(game.camera);
-
-    for (size_t i = 0; i < 2; i++) {
-      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].position.x,
-                  game.backgrounds[i].position.y, WHITE);
-    }
-
-    for (size_t i = 0; i < game.uggy_count; i++) {
-      Uggy__draw(game.uggies[i], game.camera, game.cursor);
-    }
-
-    for (size_t i = 2; i < 3; i++) {
-      DrawTexture(game.backgrounds[i].texture, game.backgrounds[i].position.x,
-                  game.backgrounds[i].position.y, WHITE);
-    }
-
-    DrawTexture(
-        game.cursor.animation.frames[game.cursor.animation.current_frame],
-        game.cursor.position.x, game.cursor.position.y, WHITE);
-
-    if (game.debug) {
-      for (size_t i = 0; i < game.physics_body_count; i++) {
-        DEBUG__draw_bordered(game.debug, game.physics_bodies[i]->aabb, MAGENTA);
-      }
-
-      DEBUG__draw_point(game.debug, game.camera.target.x, game.camera.target.y,
-                        GREEN);
-      DEBUG__draw_point(game.debug, game.camera.target.x - game.camera.offset.x,
-                        game.camera.target.y - game.camera.offset.y, SKYBLUE);
-      DEBUG__draw_point(game.debug, 0, 0, WHITE);
-    }
-
-    if (game.debug) {
-      DEBUG__draw(game.debug);
-    }
-
-    EndMode2D();
-
-    DrawTextureEx(game.hud.border, (Vector2){0}, 0, window_scale, WHITE);
-
-    if (game.debug) {
-      DrawText("DEBUG", 45, 35, 50, GREEN);
-    }
-
-    if (game.is_paused) {
-      char *text = "PAUSED";
-      int font_size = 50;
-      int text_width = MeasureText(text, font_size);
-      DrawText(text, WINDOW_WIDTH / 2 - text_width / 2, WINDOW_HEIGHT / 2,
-               font_size, RED);
-    }
-
-    EndDrawing();
-    // -------------------------------------------------------------------------
+    MorteGame__draw(&game);
   }
 
   // De-Initialization.
