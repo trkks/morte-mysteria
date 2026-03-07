@@ -219,10 +219,10 @@ void Collision__resolve(Collision *self, PhysicsBody *a, PhysicsBody *b) {
     a->aabb.x += self->normal.x * self->depth;
     a->aabb.y += self->normal.y * self->depth;
   } else /* a->type == KINETIC && b->type == KINETIC */ {
-    a->aabb.x += self->normal.x * self->depth * b->mass / a->mass;
-    a->aabb.y += self->normal.y * self->depth * b->mass / a->mass;
-    b->aabb.x += self->normal.x * self->depth * a->mass / b->mass;
-    b->aabb.y += self->normal.y * self->depth * a->mass / b->mass;
+    a->aabb.x += self->normal.x * self->depth * (b->mass / a->mass);
+    a->aabb.y += self->normal.y * self->depth * (b->mass / a->mass);
+    b->aabb.x += self->normal.x * self->depth * (a->mass / b->mass);
+    b->aabb.y += self->normal.y * self->depth * (a->mass / b->mass);
   }
 }
 
@@ -435,6 +435,7 @@ const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
 };
 
 typedef struct {
+  bool is_paused;
   MorteGameConstants constants;
   // Bounds consisting of ground, "ceiling" and two vertical walls.
   PhysicsBody *level_bounds[4];
@@ -744,12 +745,8 @@ int main(void) {
   while (!WindowShouldClose()) {
     float delta = GetFrameTime();
 
-    // Update.
+    // User control updates.
     // -------------------------------------------------------------------------
-    MorteGame__update_physics(&game, delta);
-
-    game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
-
     if (game.debug) {
       game.constants.player_walk_speed = 500.0;
 
@@ -765,13 +762,28 @@ int main(void) {
       game.constants = DEFAULT_MORTE_GAME_CONSTANTS;
     }
 
-    if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_P)) {
+    if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_D)) {
       if (game.debug) {
         game.debug = NULL;
       } else {
         game.debug = &debug_instance;
       }
     }
+
+    if (IsKeyPressed(KEY_P)) {
+      game.is_paused = !game.is_paused;
+    }
+
+    if (game.is_paused) {
+      goto render;
+    }
+    // -------------------------------------------------------------------------
+
+    // Game logic updates.
+    // -------------------------------------------------------------------------
+    MorteGame__update_physics(&game, delta);
+
+    game.cursor.position = GetScreenToWorld2D(GetMousePosition(), game.camera);
 
     for (size_t i = 0; i < game.uggy_count; i++) {
       MorteGame__update_uggy(&game, game.uggies[i], delta);
@@ -803,6 +815,7 @@ int main(void) {
 
     // Draw.
     // -------------------------------------------------------------------------
+  render:
     BeginDrawing();
 
     ClearBackground(BACKGROUND_COLOR);
@@ -849,6 +862,14 @@ int main(void) {
 
     if (game.debug) {
       DrawText("DEBUG", 45, 35, 50, GREEN);
+    }
+
+    if (game.is_paused) {
+      char *text = "PAUSED";
+      int font_size = 50;
+      int text_width = MeasureText(text, font_size);
+      DrawText(text, WINDOW_WIDTH / 2 - text_width / 2, WINDOW_HEIGHT / 2,
+               font_size, RED);
     }
 
     EndDrawing();
