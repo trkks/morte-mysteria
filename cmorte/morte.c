@@ -233,16 +233,6 @@ Collision PhysicsBody__colliding(PhysicsBody *self, PhysicsBody other) {
   return collision;
 }
 
-/*
- * NOTE: This method assumes the bodies `a` and `b` are not the same body AND
- * that their mass is non-zero.
- *
- * Static bodies directly change the other body's position. Otherwise the bodies
- * alter each others' forces (NOTE to apply delta at caller) in order to push
- * away "softer".
- */
-void resolve_body_collision(Collision *self, PhysicsBody *a, PhysicsBody *b) {}
-
 enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
 
 enum AnimationTiming { LINEAR, EASE_IN, EASE_OUT };
@@ -568,6 +558,9 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
           return;
         }
 
+        // Static bodies directly change the other body's position. Otherwise
+        // the bodies alter each others' forces (NOTE to apply delta at caller)
+        // in order to push away "softer".
         if (a->type == STATIC) {
           b->aabb.x += collision.normal.x * collision.depth;
           b->aabb.y += collision.normal.y * collision.depth;
