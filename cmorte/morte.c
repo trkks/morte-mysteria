@@ -20,7 +20,6 @@
 #define LEVEL_HEIGHT 400
 #define LEVEL_WIDTH 2800
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
-#define BACKGROUND_TEXTURE_COUNT 3
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
@@ -123,10 +122,11 @@ void DEBUG__draw(DEBUG *self) {
     case ARROW:
       float size = 6.0f;
       DrawLineEx(object.position, object.end_position, size, object.color);
-      // The arrow tip's edge on the left side of the direction line.
-      //    \
-      // -----
-      //
+      /* The arrow tip's edge on the left side of the direction line.
+       *     \
+       *  -----
+       *
+       */
       float edge_length = 15.0f;
       Vector2 segment = Vector2Subtract(object.end_position, object.position);
       float arrow_angle = atan2(segment.y, segment.x);
@@ -137,10 +137,11 @@ void DEBUG__draw(DEBUG *self) {
                      object.end_position.y - sin(l) * edge_length,
                  },
                  size / 2, object.color);
-      // Then the right side.
-      //    \
-      // -----
-      //    /
+      /* Then the right side.
+       *    \
+       * -----
+       *    /
+       */
       float r = arrow_angle - PI / 4.0f;
       DrawLineEx(object.end_position,
                  (Vector2){
@@ -208,51 +209,39 @@ Collision PhysicsBody__colliding(PhysicsBody *self, PhysicsBody other) {
       Vector2Scale((Vector2){self->aabb.width, self->aabb.height}, 0.5f);
   Vector2 other_half =
       Vector2Scale((Vector2){other.aabb.width, other.aabb.height}, 0.5f);
-  Vector2 segment = {
+  Vector2 distance = {
       other.aabb.x + other_half.x - (self->aabb.x + self_half.x),
       other.aabb.y + other_half.y - (self->aabb.y + self_half.y),
   };
 
-  float x_overlap = self_half.x + other_half.x - fabs(segment.x);
-  float y_overlap = self_half.y + other_half.y - fabs(segment.y);
+  Vector2 overlap = {self_half.x + other_half.x - fabs(distance.x),
+                     self_half.y + other_half.y - fabs(distance.y)};
 
   Collision collision = {.happened = false};
-  if (float__is_positive(x_overlap) && float__is_positive(y_overlap)) {
+  if (float__is_positive(overlap.x) && float__is_positive(overlap.y)) {
     collision.happened = true;
-    if (x_overlap < y_overlap) {
-      collision.depth = x_overlap;
-      collision.normal = (Vector2){segment.x > 0 ? 1 : -1, 0};
+
+    if (overlap.x < overlap.y) {
+      collision.depth = overlap.x;
+      collision.normal = (Vector2){distance.x > 0 ? 1 : -1, 0};
     } else {
-      collision.depth = y_overlap;
-      collision.normal = (Vector2){0, segment.y > 0 ? 1 : -1};
+      collision.depth = overlap.y;
+      collision.normal = (Vector2){0, distance.y > 0 ? 1 : -1};
     }
   }
+
   return collision;
 }
 
 /*
  * NOTE: This method assumes the bodies `a` and `b` are not the same body AND
  * that their mass is non-zero.
+ *
+ * Static bodies directly change the other body's position. Otherwise the bodies
+ * alter each others' forces (NOTE to apply delta at caller) in order to push
+ * away "softer".
  */
-void Collision__resolve(Collision *self, PhysicsBody *a, PhysicsBody *b) {
-  if (a->type == STATIC && b->type == STATIC) {
-    // Do nothing as both bodies should always remain stationary.
-    return;
-  }
-
-  if (a->type == STATIC) {
-    b->aabb.x += self->normal.x * self->depth;
-    b->aabb.y += self->normal.y * self->depth;
-  } else if (b->type == STATIC) {
-    a->aabb.x += self->normal.x * self->depth;
-    a->aabb.y += self->normal.y * self->depth;
-  } else /* a->type == KINETIC && b->type == KINETIC */ {
-    a->aabb.x += self->normal.x * self->depth * (b->mass / a->mass);
-    a->aabb.y += self->normal.y * self->depth * (b->mass / a->mass);
-    b->aabb.x += self->normal.x * self->depth * (a->mass / b->mass);
-    b->aabb.y += self->normal.y * self->depth * (a->mass / b->mass);
-  }
-}
+void resolve_body_collision(Collision *self, PhysicsBody *a, PhysicsBody *b) {}
 
 enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
 
@@ -459,7 +448,7 @@ typedef struct {
 
 const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
     .player_walk_speed = 50.0f,
-    .player_jump_speed = 350.0f,
+    .player_jump_speed = -350.0f,
 };
 
 typedef struct {
@@ -471,12 +460,13 @@ typedef struct {
   float gravity;
   Cursor cursor;
   Camera2D camera;
+  // Convenience handle to the player Uggy.
   Uggy *player;
   size_t physics_body_count;
   size_t uggy_count;
   PhysicsBody **physics_bodies;
   Uggy **uggies;
-  Background backgrounds[BACKGROUND_TEXTURE_COUNT];
+  Background backgrounds[3];
   HUD hud;
   DEBUG *debug;
 } MorteGame;
@@ -497,7 +487,7 @@ void MorteGame__free(MorteGame *self) {
   }
   free(self->uggies);
 
-  for (size_t i = 0; i < BACKGROUND_TEXTURE_COUNT; i++) {
+  for (size_t i = 0; i < 3; i++) {
     UnloadTexture(self->backgrounds[i].texture);
   }
 
@@ -551,35 +541,69 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
 
   // Check collisions.
   for (size_t i = 0; i < self->physics_body_count; i++) {
-    PhysicsBody *body = self->physics_bodies[i];
+    PhysicsBody *a = self->physics_bodies[i];
 
     for (size_t j = 0; j < self->physics_body_count; j++) {
       if (i == j) {
         continue;
       }
-      PhysicsBody *other_body = self->physics_bodies[j];
-      Collision collision = PhysicsBody__colliding(body, *other_body);
+      PhysicsBody *b = self->physics_bodies[j];
+
+      Collision collision = PhysicsBody__colliding(a, *b);
       if (collision.happened) {
+
         if (self->debug) {
-          DEBUG__draw_bordered(self->debug, body->aabb, YELLOW);
-          DEBUG__draw_bordered(self->debug, other_body->aabb, YELLOW);
-          DEBUG__draw_direction(self->debug,
-                                body->aabb.x + body->aabb.width / 2,
-                                body->aabb.y + body->aabb.height / 2,
+          DEBUG__draw_bordered(self->debug, a->aabb, YELLOW);
+          DEBUG__draw_bordered(self->debug, b->aabb, YELLOW);
+          DEBUG__draw_direction(self->debug, b->aabb.x + b->aabb.width / 2,
+                                b->aabb.y + b->aabb.height / 2,
                                 collision.normal.x, collision.normal.y, YELLOW);
         }
 
-        // Resolve collisions.
-        Collision__resolve(&collision, body, other_body);
+        // Resolve collisions physics i.e., how the bodies change position,
+        // force etc. resulting from collision.
+
+        if (a->type == STATIC && b->type == STATIC) {
+          // Do nothing as both bodies should always remain stationary.
+          return;
+        }
+
+        if (a->type == STATIC) {
+          b->aabb.x += collision.normal.x * collision.depth;
+          b->aabb.y += collision.normal.y * collision.depth;
+        } else if (b->type == STATIC) {
+          a->aabb.x += collision.normal.x * collision.depth;
+          a->aabb.y += collision.normal.y * collision.depth;
+        } else /* a->type == KINETIC && b->type == KINETIC */ {
+          float a_over_b = Clamp(a->mass * b->inverse_mass, E, 1.0);
+          float b_over_a = Clamp(b->mass * a->inverse_mass, E, 1.0);
+          a->force.x += collision.normal.x * collision.depth * b_over_a;
+          a->force.y += collision.normal.y * collision.depth * b_over_a;
+          b->force.x += -collision.normal.x * collision.depth * a_over_b;
+          b->force.y += -collision.normal.y * collision.depth * a_over_b;
+        }
+        a->force = Vector2Scale(a->force, delta);
+        b->force = Vector2Scale(b->force, delta);
+
+        if (self->debug) {
+          self->is_paused = true;
+        }
 
         // Check for game specific resolutions.
+
+        // De-ground bodies that are off the ground.
+        if (!float__eq(a->force.y, 0)) {
+          a->is_grounded = false;
+        }
+
+        // Ground when dropping straight down on a static body.
         if (Vector2__eq(collision.normal, UP)) {
-          if (body->type == KINETIC && other_body->type == STATIC) {
-            body->is_grounded = true;
-            other_body->velocity.y = 0;
-          } else if (other_body->type == KINETIC && body->type == STATIC) {
-            other_body->is_grounded = true;
-            other_body->velocity.y = 0;
+          if (a->type == KINETIC && b->type == STATIC) {
+            a->is_grounded = true;
+            b->velocity.y = 0;
+          } else if (b->type == KINETIC && a->type == STATIC) {
+            b->is_grounded = true;
+            b->velocity.y = 0;
           }
         }
       }
@@ -613,31 +637,6 @@ void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
                       self->camera.target.y - self->camera.offset.y, SKYBLUE);
     DEBUG__draw_point(self->debug, 0, 0, WHITE);
   }
-}
-
-void initialize_level(MorteGame *game) {
-  srand(666);
-  game->constants = DEFAULT_MORTE_GAME_CONSTANTS;
-
-  // Ground.
-  game->level_bounds[0] = PhysicsBody__new(
-      STATIC, (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT, LEVEL_WIDTH, 50}, 0);
-  // Ceiling.
-  game->level_bounds[1] = PhysicsBody__new(
-      STATIC, (Rectangle){-LEVEL_WIDTH / 2, -50, LEVEL_WIDTH, 50}, 0);
-  // Left wall.
-  game->level_bounds[2] = PhysicsBody__new(
-      STATIC, (Rectangle){-LEVEL_WIDTH / 2 - 50, 0, 50, LEVEL_HEIGHT}, 0);
-  // Right wall.
-  game->level_bounds[3] = PhysicsBody__new(
-      STATIC, (Rectangle){LEVEL_WIDTH / 2, 0, 50, LEVEL_HEIGHT}, 0);
-
-  MorteGame__add_physics_body(game, game->level_bounds[0]);
-  MorteGame__add_physics_body(game, game->level_bounds[1]);
-  MorteGame__add_physics_body(game, game->level_bounds[2]);
-  MorteGame__add_physics_body(game, game->level_bounds[3]);
-
-  game->gravity = 400;
 }
 
 void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
@@ -693,6 +692,81 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
     break;
   }
 }
+MorteGame MorteGame__initialize() {
+  MorteGame game = {0};
+
+  game.camera = (Camera2D){0};
+  float window_scale = WINDOW_HEIGHT / LEVEL_HEIGHT;
+  game.camera.zoom = window_scale;
+  game.view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT};
+
+  // ---------------------------------------------------------------------------
+  // Load (and position static'ish) content.
+  game.cursor = (Cursor){.position = {0, 0},
+                         .animation = Animation__from_path_template(
+                             "content/kursori/kursori00%02d.png",
+                             ANIMATION_FRAME_COUNT_CURSOR,
+                             ANIMATION_LENGTH_MILLIS_CURSOR)};
+  game.cursor.animation.state = LOOPING;
+
+  MorteGame__spawn_uggy(&game, PRIEST);
+
+  game.hud = (HUD){.border = LoadTexture("content/border.png")};
+
+  Texture2D background0 = LoadTexture("content/tausta/tausta-0.jpg");
+  game.backgrounds[0] = (Background){.texture = background0,
+                                     .position = {-background0.width / 2, 0}};
+  Texture2D background1 = LoadTexture("content/tausta/tausta-1.png");
+  game.backgrounds[1] = (Background){.texture = background1,
+                                     .position = {-background1.width / 2, 0}};
+  Texture2D background2 = LoadTexture("content/tausta/edusta.png");
+  game.backgrounds[2] = (Background){
+      .texture = background2,
+      .position = {-background2.width / 2, LEVEL_HEIGHT - background2.height}};
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // Initialize level
+  srand(666);
+  game.constants = DEFAULT_MORTE_GAME_CONSTANTS;
+
+  // Ground.
+  game.level_bounds[0] = PhysicsBody__new(
+      STATIC, (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT, LEVEL_WIDTH, 50}, 0);
+  // Ceiling.
+  game.level_bounds[1] = PhysicsBody__new(
+      STATIC, (Rectangle){-LEVEL_WIDTH / 2, -50, LEVEL_WIDTH, 50}, 0);
+  // Left wall.
+  game.level_bounds[2] = PhysicsBody__new(
+      STATIC, (Rectangle){-LEVEL_WIDTH / 2 - 50, 0, 50, LEVEL_HEIGHT}, 0);
+  // Right wall.
+  game.level_bounds[3] = PhysicsBody__new(
+      STATIC, (Rectangle){LEVEL_WIDTH / 2, 0, 50, LEVEL_HEIGHT}, 0);
+
+  MorteGame__add_physics_body(&game, game.level_bounds[0]);
+  MorteGame__add_physics_body(&game, game.level_bounds[1]);
+  MorteGame__add_physics_body(&game, game.level_bounds[2]);
+  MorteGame__add_physics_body(&game, game.level_bounds[3]);
+
+  game.gravity = 400;
+  // ---------------------------------------------------------------------------
+
+  return game;
+}
+
+/* (What a mess this function's idea is...) */
+MorteGame MorteGame__reset(MorteGame *self, DEBUG *debug_instance) {
+  if (self != NULL) {
+    MorteGame__free(self);
+    *self = MorteGame__initialize();
+    self->debug = debug_instance;
+    return *self;
+  } else {
+    MorteGame game = MorteGame__initialize();
+    game.debug = debug_instance;
+    return game;
+  }
+}
 
 void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
   Animation__update(&uggy->animation, delta);
@@ -716,7 +790,7 @@ void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
 
     // Vertical movement control.
     if (IsKeyDown(KEY_SPACE) && self->player->body->is_grounded) {
-      self->player->body->force.y -= self->constants.player_jump_speed;
+      self->player->body->force.y += self->constants.player_jump_speed;
       self->player->body->is_grounded = false;
     }
     break;
@@ -756,10 +830,8 @@ void MorteGame__draw(MorteGame *self) {
     Uggy__draw(self->uggies[i], self->camera, self->cursor);
   }
 
-  for (size_t i = 2; i < 3; i++) {
-    DrawTexture(self->backgrounds[i].texture, self->backgrounds[i].position.x,
-                self->backgrounds[i].position.y, WHITE);
-  }
+  DrawTexture(self->backgrounds[2].texture, self->backgrounds[2].position.x,
+              self->backgrounds[2].position.y, WHITE);
 
   DrawTexture(
       self->cursor.animation.frames[self->cursor.animation.current_frame],
@@ -786,6 +858,57 @@ void MorteGame__draw(MorteGame *self) {
   }
 
   EndDrawing();
+}
+
+enum GameStatus {
+  GAME_RUNNING,
+  GAME_PAUSED,
+  GAME_RESET,
+  GAME_DEBUGGING,
+};
+
+/*
+ * User control updates.
+ *
+ * Returns true if the game loop should continue to the end of this frame and
+ * false if not.
+ */
+enum GameStatus MorteGame__process_meta_input(MorteGame *self,
+                                              DEBUG *debug_instance) {
+  if (self->debug) {
+    self->constants.player_walk_speed = 500.0;
+
+    self->camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
+
+    // Enemy spawn control.
+    for (size_t i = SNAKE; i < HAND; i++) {
+      if (IsKeyPressed(KEY_ZERO + i)) {
+        MorteGame__spawn_uggy(self, i);
+      }
+    }
+  } else {
+    self->constants = DEFAULT_MORTE_GAME_CONSTANTS;
+  }
+
+  if (IsKeyDown(KEY_LEFT_CONTROL)) {
+    if (IsKeyPressed(KEY_R)) {
+      return GAME_RESET;
+    }
+
+    if (IsKeyPressed(KEY_D)) {
+      return GAME_DEBUGGING;
+    }
+  }
+
+  if (IsKeyPressed(KEY_P)) {
+    self->is_paused = !self->is_paused;
+  }
+
+  if (self->is_paused) {
+    return GAME_PAUSED;
+  }
+
+  return GAME_RUNNING;
 }
 
 /* Perform game logic updates. */
@@ -822,30 +945,6 @@ void MorteGame__update(MorteGame *self, float delta) {
   }
 }
 
-void load_content(MorteGame *game) {
-  game->cursor = (Cursor){.position = {0, 0},
-                          .animation = Animation__from_path_template(
-                              "content/kursori/kursori00%02d.png",
-                              ANIMATION_FRAME_COUNT_CURSOR,
-                              ANIMATION_LENGTH_MILLIS_CURSOR)};
-  game->cursor.animation.state = LOOPING;
-
-  MorteGame__spawn_uggy(game, PRIEST);
-
-  game->hud = (HUD){.border = LoadTexture("content/border.png")};
-
-  Texture2D background0 = LoadTexture("content/tausta/tausta-0.jpg");
-  game->backgrounds[0] = (Background){.texture = background0,
-                                      .position = {-background0.width / 2, 0}};
-  Texture2D background1 = LoadTexture("content/tausta/tausta-1.png");
-  game->backgrounds[1] = (Background){.texture = background1,
-                                      .position = {-background1.width / 2, 0}};
-  Texture2D background2 = LoadTexture("content/tausta/edusta.png");
-  game->backgrounds[2] = (Background){
-      .texture = background2,
-      .position = {-background2.width / 2, LEVEL_HEIGHT - background2.height}};
-}
-
 int main(void) {
   InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT,
              "Morte Mysteria dom Domine dem Daemonium");
@@ -853,67 +952,47 @@ int main(void) {
   SetTargetFPS(60);
   DisableCursor();
 
-  MorteGame game = {0};
-  game.camera = (Camera2D){0};
-  float window_scale = WINDOW_HEIGHT / LEVEL_HEIGHT;
-  game.camera.zoom = window_scale;
-  game.view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT};
-
   // DEBUG
   DEBUG debug_instance = {0};
-  game.debug = &debug_instance;
 
-  initialize_level(&game);
-
-  load_content(&game);
+  MorteGame game = MorteGame__reset(NULL, &debug_instance);
 
   while (!WindowShouldClose()) {
     float delta = GetFrameTime();
 
-    // User control updates.
-    // -------------------------------------------------------------------------
-    if (game.debug) {
-      game.constants.player_walk_speed = 500.0;
-
-      game.camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
-
-      // Enemy spawn control.
-      for (size_t i = SNAKE; i < HAND; i++) {
-        if (IsKeyPressed(KEY_ZERO + i)) {
-          MorteGame__spawn_uggy(&game, i);
-        }
-      }
-    } else {
-      game.constants = DEFAULT_MORTE_GAME_CONSTANTS;
-    }
-
-    if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_D)) {
+    switch (MorteGame__process_meta_input(&game, &debug_instance)) {
+    case GAME_DEBUGGING:
       if (game.debug) {
         game.debug = NULL;
       } else {
         game.debug = &debug_instance;
       }
-    }
+      // Fall to game state update.
 
-    if (IsKeyPressed(KEY_P)) {
-      game.is_paused = !game.is_paused;
-    }
+    case GAME_RUNNING:
+      // Refresh debug drawing ready for this next frame frame.
+      if (game.debug) {
+        game.debug->draw_queue_length = 0;
+      }
 
-    if (game.is_paused) {
-      MorteGame__draw(&game);
+      MorteGame__update(&game, delta);
+      // Fall to draw.
+
+    case GAME_PAUSED:
       // Skip game logic updates.
-      continue;
+      MorteGame__draw(&game);
+      break;
+
+    case GAME_RESET:
+      // Start the game loop from the beginning.
+      MorteGame__reset(&game, &debug_instance);
+      // FIXME? For some reason the (keyboard) input presses stays "on" if a
+      // drawing cycle is not completed.
+      // Draw nothing so as not to flash the uninitialized scene in between.
+      BeginDrawing();
+      EndDrawing();
+      break;
     }
-    // -------------------------------------------------------------------------
-
-    // Refresh debug drawing ready for this next frame frame.
-    if (game.debug) {
-      game.debug->draw_queue_length = 0;
-    }
-
-    MorteGame__update(&game, delta);
-
-    MorteGame__draw(&game);
   }
 
   // De-Initialization.
