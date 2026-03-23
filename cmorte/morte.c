@@ -387,21 +387,29 @@ void Uggy__draw_priest_eye(Uggy *self, Camera2D camera, Cursor cursor,
   Vector2 independent_eye_pos = {self->eye_texture.width / 2,
                                  self->eye_texture.height / 2};
   // Eye in Priest coordinates.
-  Vector2 relative_eye_pos = {
-      self->animation.frames[0].width / 2 +
-          (left_side ? -self->animation.frames[0].width * 0.15 : 1.0f),
-      self->animation.frames[0].height * 0.06};
+  Vector2 relative_eye_pos = {self->animation.frames[0].width / 2,
+                              self->animation.frames[0].height * 0.06};
 
   // Eye in world coordinates.
   Vector2 absolute_eye_pos =
       Vector2Add(Vector2Add(independent_eye_pos, relative_eye_pos),
                  (Vector2){self->body->aabb.x, self->body->aabb.y});
 
+  // Translate based on eye's side.
+  if (left_side) {
+    // NOTE: For some reason not translating by whole number makes the eye
+    // shaky...
+    absolute_eye_pos.x -= 11.0f;
+  } else {
+    absolute_eye_pos.x += 1.0f;
+  }
+
   // Rotate the eyes to look at the cursor.
   DrawTexturePro(
       self->eye_texture,
       (Rectangle){0, 0, self->eye_texture.width, self->eye_texture.height},
-      (Rectangle){absolute_eye_pos.x, absolute_eye_pos.y,
+      // Floor()ing prevents jittering when moving the character along.
+      (Rectangle){floor(absolute_eye_pos.x), absolute_eye_pos.y,
                   self->eye_texture.width, self->eye_texture.height},
       independent_eye_pos, degrees_between(absolute_eye_pos, cursor.position),
       WHITE);
@@ -615,9 +623,10 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
 void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
   // Offset the target if moving too close to level edges.
   self->camera.target =
-      (Vector2){Clamp(object.x + object.width / 2,
-                      -LEVEL_WIDTH / 2 + self->view_size.x / 4,
-                      LEVEL_WIDTH / 2 - self->view_size.x / 4),
+      // Floor()ing prevents jittering when moving the camera along.
+      (Vector2){floor(Clamp(object.x + object.width / 2,
+                            -LEVEL_WIDTH / 2 + self->view_size.x / 4,
+                            LEVEL_WIDTH / 2 - self->view_size.x / 4)),
                 fmax(object.y + (object.height - LEVEL_HEIGHT), 0)};
 
   self->camera.offset = (Vector2){self->view_size.x / 2, 0};
@@ -649,8 +658,7 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
         Uggy__new(PRIEST,
                   PhysicsBody__new(
                       KINETIC,
-                      (Rectangle){-LEVEL_WIDTH / 2 + player_texture.width,
-                                  LEVEL_HEIGHT - player_texture.height,
+                      (Rectangle){0, LEVEL_HEIGHT - player_texture.height,
                                   player_texture.width, player_texture.height},
                       100),
                   Animation__from_frames(1, &player_texture, 0));
