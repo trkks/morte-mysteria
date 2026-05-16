@@ -507,6 +507,29 @@ void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
   MorteGame__add_physics_body(self, uggy->body);
 }
 
+void MorteGame__update_body_physics(MorteGame *self, PhysicsBody *body,
+                                    float delta) {
+  if (body->type != KINETIC) {
+    return;
+  }
+
+  if (!body->is_grounded) {
+    body->force.y += self->gravity * delta;
+    body->velocity.x *= 0.95;
+  } else {
+    body->velocity.x *= 0.6;
+  }
+
+  body->velocity.x += body->force.x;
+  body->velocity.y += body->force.y;
+
+  body->aabb.x += body->velocity.x * delta;
+  body->aabb.y += body->velocity.y * delta;
+
+  // This seems to make the jump ramp nicely on the fall.
+  body->force.y = body->is_grounded ? 0 : self->gravity * delta;
+}
+
 /*
  * ## Kudos:
  * -
@@ -516,25 +539,7 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
   // Apply forces.
   for (size_t i = 0; i < self->physics_body_count; i++) {
     PhysicsBody *body = self->physics_bodies[i];
-    if (body->type != KINETIC) {
-      continue;
-    }
-
-    if (!body->is_grounded) {
-      body->force.y += self->gravity * delta;
-      body->velocity.x *= 0.95;
-    } else {
-      body->velocity.x *= 0.6;
-    }
-
-    body->velocity.x += body->force.x;
-    body->velocity.y += body->force.y;
-
-    body->aabb.x += body->velocity.x * delta;
-    body->aabb.y += body->velocity.y * delta;
-
-    // This seems to make the jump ramp nicely on the fall.
-    body->force.y = body->is_grounded ? 0 : self->gravity * delta;
+    MorteGame__update_body_physics(self, body, delta);
   }
 
   // Check collisions.
@@ -576,8 +581,8 @@ void MorteGame__update_physics(MorteGame *self, float delta) {
           a->aabb.x += collision.normal.x * collision.depth;
           a->aabb.y += collision.normal.y * collision.depth;
         } else /* a->type == KINETIC && b->type == KINETIC */ {
-          float a_over_b = Clamp(a->mass * b->inverse_mass, E, 1.0);
-          float b_over_a = Clamp(b->mass * a->inverse_mass, E, 1.0);
+          float a_over_b = a->mass / (a->mass + b->mass);
+          float b_over_a = b->mass / (a->mass + b->mass);
           a->force.x += collision.normal.x * collision.depth * b_over_a;
           a->force.y += collision.normal.y * collision.depth * b_over_a;
           b->force.x += -collision.normal.x * collision.depth * a_over_b;
