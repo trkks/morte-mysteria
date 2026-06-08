@@ -10,7 +10,7 @@
 #include "raylib/raylib.h"
 #include "raylib/raymath.h"
 
-#define UP (Vector2){0, -1}
+#define DOWN (Vector2){0, 1}
 #define E 0.00001f
 /* 7/4 ratio */
 #define ASPECT_RATIO 1.75
@@ -165,10 +165,12 @@ bool Vector2__eq(Vector2 a, Vector2 b) {
 }
 
 typedef struct {
-  // This replaces using NULL as a flag if there was no collision.
+  /* This replaces using NULL as a flag if there was no collision. */
   bool happened;
   float depth;
-  Vector2 normal;
+  /* This is the direction where the collider was moving when collision
+   * happened. */
+  Vector2 direction;
 } Collision;
 
 enum PhysicsType { STATIC, KINETIC };
@@ -181,7 +183,6 @@ typedef struct {
   Vector2 velocity;
   /* This stores interactions for physics simulation during a single frame. */
   Vector2 impulse;
-  bool is_grounded;
 } PhysicsBody;
 
 PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
@@ -223,10 +224,10 @@ Collision PhysicsBody__colliding(PhysicsBody *self, PhysicsBody other) {
 
     if (overlap.x < overlap.y) {
       collision.depth = overlap.x;
-      collision.normal = (Vector2){distance.x > 0 ? 1 : -1, 0};
+      collision.direction = (Vector2){distance.x > 0 ? 1 : -1, 0};
     } else {
       collision.depth = overlap.y;
-      collision.normal = (Vector2){0, distance.y > 0 ? 1 : -1};
+      collision.direction = (Vector2){0, distance.y > 0 ? 1 : -1};
     }
   }
 
@@ -444,7 +445,7 @@ typedef struct {
 } MorteGameConstants;
 
 const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
-    .player_walk_speed = 50.0f,
+    .player_walk_speed = 500.0f,
     .player_jump_speed = 350.0f,
 };
 
@@ -452,7 +453,7 @@ typedef struct {
   bool is_paused;
   MorteGameConstants constants;
   // Bounds consisting of ground, "ceiling" and two vertical walls.
-  PhysicsBody *level_bounds[4];
+  PhysicsBody *level_bounds[3];
   Vector2 view_size;
   float gravity;
   Cursor cursor;
@@ -520,73 +521,51 @@ void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
   MorteGame__add_animation(self, uggy->animation);
 }
 
-void MorteGame__handle_collisions(MorteGame *self, float delta) {
+void process_simple_collision(PhysicsBody *body, Collision collision) {
+  body->aabb.x -= collision.direction.x * collision.depth;
+  body->aabb.y -= collision.direction.y * collision.depth;
+
+  if (float__eq(collision.direction.y, DOWN.y)) {
+    body->velocity.y = 0;
+    body->impulse.y = 0;
+  }
+  body->velocity.x = 0;
+  body->impulse.x = 0;
+}
+
+/**
+ * Check for and report collisions between physics bodies while preventing
+ * KINETIC bodies from entering STATIC bodies (i.e., keep objects inside
+ * the game bounds).
+ */
+void MorteGame__process_simple_collisions(MorteGame *self, float delta) {
   for (size_t i = 0; i < self->physics_body_count; i++) {
     PhysicsBody *a = self->physics_bodies[i];
 
-    for (size_t j = 0; j < self->physics_body_count; j++) {
-      if (i == j) {
-        continue;
-      }
+    for (size_t j = i + 1; j < self->physics_body_count; j++) {
       PhysicsBody *b = self->physics_bodies[j];
 
       Collision collision = PhysicsBody__colliding(a, *b);
-      if (!collision.happened) {
-        continue;
-      }
 
-      if (self->debug) {
-        DEBUG__draw_bordered(self->debug, a->aabb, YELLOW);
-        DEBUG__draw_bordered(self->debug, b->aabb, YELLOW);
-        DEBUG__draw_direction(self->debug, b->aabb.x + b->aabb.width / 2,
-                              b->aabb.y + b->aabb.height / 2,
-                              collision.normal.x, collision.normal.y, YELLOW);
-      }
-
-      // Resolve collisions physics i.e., how the bodies change position,
-      // force etc. resulting from collision.
-
-      if (a->type == STATIC && b->type == STATIC) {
-        // Do nothing as both bodies should always remain stationary.
-        continue;
-      }
-
-      // Separate the bodies based on their difference in mass.
-      if (a->type == STATIC) {
-        b->aabb.x += collision.normal.x * collision.depth;
-        b->aabb.y += collision.normal.y * collision.depth;
-      } else if (b->type == STATIC) {
-        a->aabb.x += collision.normal.x * collision.depth;
-        a->aabb.y += collision.normal.y * collision.depth;
-      } else /* a->type == KINETIC && b->type == KINETIC */ {
-        // Separate.
-        float a_over_b = a->mass / (a->mass + b->mass);
-        float b_over_a = b->mass / (a->mass + b->mass);
-        a->impulse.x += collision.normal.x * collision.depth * b_over_a;
-        a->impulse.y += collision.normal.y * collision.depth * b_over_a;
-        b->impulse.x += -collision.normal.x * collision.depth * a_over_b;
-        b->impulse.y += -collision.normal.y * collision.depth * a_over_b;
-      }
-
-      if (self->debug) {
-        self->is_paused = true;
-      }
-
-      // Check for object specific resolutions.
-
-      // Check for bodies that are falling thus off the ground.
-      if (!float__eq(a->velocity.y, 0)) {
-        a->is_grounded = false;
-      }
-
-      if (Vector2__eq(collision.normal, UP)) {
-        if (a->type == KINETIC && b->type == STATIC) {
-          a->is_grounded = true;
-          b->velocity.y = 0;
-        } else if (b->type == KINETIC && a->type == STATIC) {
-          b->is_grounded = true;
-          b->velocity.y = 0;
+      if (collision.happened) {
+        if (self->debug) {
+          DEBUG__draw_bordered(self->debug, a->aabb, YELLOW);
+          DEBUG__draw_bordered(self->debug, b->aabb, YELLOW);
+          DEBUG__draw_direction(self->debug, b->aabb.x + b->aabb.width / 2,
+                                b->aabb.y + b->aabb.height / 2,
+                                collision.direction.x, collision.direction.y,
+                                YELLOW);
         }
+
+        // self->is_paused = true;
+        if (a->type == KINETIC && b->type == STATIC) {
+          process_simple_collision(a, collision);
+        } else if (b->type == KINETIC && a->type == STATIC) {
+          process_simple_collision(b, collision);
+        } else {
+          self->is_paused = false;
+        }
+        // TODO: Report collision event for object specific resolutions.
       }
     }
   }
@@ -630,14 +609,14 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
     Texture2D eye_texture = LoadTexture("content/silma.png");
 
     // Initialization.
-    self->player =
-        Uggy__new(PRIEST,
-                  PhysicsBody__new(
-                      KINETIC,
-                      (Rectangle){0, LEVEL_HEIGHT - player_texture.height,
-                                  player_texture.width, player_texture.height},
-                      100),
-                  Animation__from_frames(1, &player_texture, 0));
+    self->player = Uggy__new(
+        PRIEST,
+        PhysicsBody__new(
+            KINETIC,
+            (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT - player_texture.height,
+                        player_texture.width, player_texture.height},
+            100),
+        Animation__from_frames(1, &player_texture, 0));
 
     // Specialization.
     self->player->eye_texture = eye_texture;
@@ -711,20 +690,16 @@ MorteGame MorteGame__initialize() {
   // Ground.
   game.level_bounds[0] = PhysicsBody__new(
       STATIC, (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT, LEVEL_WIDTH, 50}, 0);
-  // Ceiling.
-  game.level_bounds[1] = PhysicsBody__new(
-      STATIC, (Rectangle){-LEVEL_WIDTH / 2, -50, LEVEL_WIDTH, 50}, 0);
   // Left wall.
-  game.level_bounds[2] = PhysicsBody__new(
+  game.level_bounds[1] = PhysicsBody__new(
       STATIC, (Rectangle){-LEVEL_WIDTH / 2 - 50, 0, 50, LEVEL_HEIGHT}, 0);
   // Right wall.
-  game.level_bounds[3] = PhysicsBody__new(
+  game.level_bounds[2] = PhysicsBody__new(
       STATIC, (Rectangle){LEVEL_WIDTH / 2, 0, 50, LEVEL_HEIGHT}, 0);
 
   MorteGame__add_physics_body(&game, game.level_bounds[0]);
   MorteGame__add_physics_body(&game, game.level_bounds[1]);
   MorteGame__add_physics_body(&game, game.level_bounds[2]);
-  MorteGame__add_physics_body(&game, game.level_bounds[3]);
 
   game.gravity = 10.0f;
   // ---------------------------------------------------------------------------
@@ -763,20 +738,20 @@ void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
       horizontal.x = 0;
     }
 
-    if (self->player->body->is_grounded) {
+    if (float__eq(self->player->body->velocity.y, 0)) {
       // Jump from the ground into the air.
       if (IsKeyDown(KEY_SPACE)) {
-        self->player->body->velocity.y = -self->constants.player_jump_speed;
-        self->player->body->is_grounded = false;
+        uggy->body->velocity.y = -self->constants.player_jump_speed;
       }
     } else {
       // Make air-strafing a bit harder than ground movement.
-      self->player->body->impulse.x *= 0.95f;
+      uggy->body->impulse.x *= 0.95f;
     }
 
     // Apply straight to velocity in order to avoid having to wait speeding
     // up.
-    self->player->body->velocity.x = horizontal.x;
+    uggy->body->velocity.x = horizontal.x;
+
     break;
   case SNAKE:
     break;
@@ -905,24 +880,26 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
 /* Perform game logic updates. */
 void MorteGame__update(MorteGame *self, float delta) {
   for (size_t i = 0; i < self->uggy_count; i++) {
-    MorteGame__update_uggy(self, self->uggies[i], delta);
+    Uggy *uggy = self->uggies[i];
+
+    if (self->debug) {
+      printf("p %7.1f, %7.1f\tv %7.1f, %7.1f\ti %7.1f, %7.1f\n",
+             uggy->body->aabb.x, uggy->body->aabb.y, uggy->body->velocity.x,
+             uggy->body->velocity.y, uggy->body->impulse.x,
+             uggy->body->impulse.y);
+    }
+
+    MorteGame__update_uggy(self, uggy, delta);
   }
 
   // Consider gravity.
   for (size_t i = 0; i < self->physics_body_count; i++) {
     PhysicsBody *body = self->physics_bodies[i];
-
-    if (body->type != KINETIC) {
-      continue;
-    }
-
-    if (!body->is_grounded) {
+    if (body->type == KINETIC && !float__eq(body->velocity.y, 0)) {
+      // Only apply gravity on objects moving in the air.
       body->impulse.y += self->gravity * body->mass;
     }
   }
-
-  // Handle collisions.
-  MorteGame__handle_collisions(self, delta);
 
   // Integrate movement.
   for (size_t i = 0; i < self->physics_body_count; i++) {
@@ -934,13 +911,18 @@ void MorteGame__update(MorteGame *self, float delta) {
     body->aabb.x += body->velocity.x * delta;
     body->aabb.y += body->velocity.y * delta;
 
-    // NOTE: Reset impulses for next frame.
-    body->impulse = (Vector2){0};
-
     if (self->debug) {
       // Debug the physics body movement result.
       DEBUG__draw_bordered(self->debug, body->aabb, MAGENTA);
     }
+  }
+
+  MorteGame__process_simple_collisions(self, delta);
+
+  for (size_t i = 0; i < self->physics_body_count; i++) {
+    PhysicsBody *body = self->physics_bodies[i];
+    // NOTE: Reset impulses for next frame.
+    body->impulse = (Vector2){0};
   }
 
   self->cursor.position = GetScreenToWorld2D(GetMousePosition(), self->camera);
