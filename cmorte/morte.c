@@ -46,6 +46,7 @@ typedef struct {
 typedef struct {
   size_t draw_queue_length;
   DEBUG_visual *draw_queue;
+  bool pause_game_after_this_frame;
 } DEBUG;
 
 void DEBUG__enqueue(DEBUG *self, DEBUG_visual object) {
@@ -164,6 +165,10 @@ bool Vector2__eq(Vector2 a, Vector2 b) {
   return float__eq(a.x, b.x) && float__eq(a.y, b.y);
 }
 
+Vector2 Rectangle__center(Rectangle self) {
+  return (Vector2){self.x + self.width / 2.0f, self.y + self.height / 2.0f};
+}
+
 typedef struct {
   /* This replaces using NULL as a flag if there was no collision. */
   bool happened;
@@ -198,7 +203,7 @@ PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
 }
 
 /*
- * Return if and how the bodies collide.
+ * Return if and how self collides to other.
  *
  * ## Kudos:
  * -
@@ -445,7 +450,7 @@ typedef struct {
 } MorteGameConstants;
 
 const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
-    .player_walk_speed = 500.0f,
+    .player_walk_speed = 100.0f,
     .player_jump_speed = 350.0f,
 };
 
@@ -521,50 +526,51 @@ void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
   MorteGame__add_animation(self, uggy->animation);
 }
 
-void process_simple_collision(PhysicsBody *body, Collision collision) {
-  body->aabb.x -= collision.direction.x * collision.depth;
-  body->aabb.y -= collision.direction.y * collision.depth;
-
-  if (float__eq(collision.direction.y, DOWN.y)) {
-    body->velocity.y = 0;
-    body->impulse.y = 0;
-  }
-  body->velocity.x = 0;
-  body->impulse.x = 0;
-}
+void process_simple_collision(PhysicsBody *body, Collision collision) {}
 
 /**
- * Check for and report collisions between physics bodies while preventing
+ * Check for and report collisions between physics bodies preventing
  * KINETIC bodies from entering STATIC bodies (i.e., keep objects inside
  * the game bounds).
  */
-void MorteGame__process_simple_collisions(MorteGame *self, float delta) {
+void MorteGame__process_wall_collisions(MorteGame *self, float delta) {
   for (size_t i = 0; i < self->physics_body_count; i++) {
     PhysicsBody *a = self->physics_bodies[i];
 
     for (size_t j = i + 1; j < self->physics_body_count; j++) {
       PhysicsBody *b = self->physics_bodies[j];
 
-      Collision collision = PhysicsBody__colliding(a, *b);
+      PhysicsBody *collider, *collidee;
+      if (a->type == KINETIC && b->type == STATIC) {
+        collider = a;
+        collidee = b;
+      } else if (b->type == KINETIC && a->type == STATIC) {
+        collider = b;
+        collidee = a;
+      }
+
+      Collision collision = PhysicsBody__colliding(collider, *collidee);
 
       if (collision.happened) {
         if (self->debug) {
           DEBUG__draw_bordered(self->debug, a->aabb, YELLOW);
           DEBUG__draw_bordered(self->debug, b->aabb, YELLOW);
-          DEBUG__draw_direction(self->debug, b->aabb.x + b->aabb.width / 2,
-                                b->aabb.y + b->aabb.height / 2,
+          DEBUG__draw_direction(self->debug, a->aabb.x + a->aabb.width / 2,
+                                a->aabb.y + a->aabb.height / 2,
                                 collision.direction.x, collision.direction.y,
                                 YELLOW);
         }
 
-        // self->is_paused = true;
-        if (a->type == KINETIC && b->type == STATIC) {
-          process_simple_collision(a, collision);
-        } else if (b->type == KINETIC && a->type == STATIC) {
-          process_simple_collision(b, collision);
-        } else {
-          self->is_paused = false;
+        // Separate the collider from the wall.
+        collider->aabb.x -= collision.direction.x * collision.depth;
+        collider->aabb.y -= collision.direction.y * collision.depth;
+
+        // Stop when dropping onto a platform.
+        if (float__eq(collision.direction.y, DOWN.y)) {
+          collider->velocity.y = 0;
+          collider->impulse.y = 0;
         }
+
         // TODO: Report collision event for object specific resolutions.
       }
     }
@@ -759,11 +765,13 @@ void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
     break;
   case GULL:
     if (uggy->body->aabb.y > 50.0f) {
+      float floating = fmin(30.0f, fabs(30.0f - uggy->body->velocity.x));
+      float homing = Rectangle__center(self->player->body->aabb).x >
+                             Rectangle__center(uggy->body->aabb).x
+                         ? 1.0f
+                         : -1.0f;
       uggy->body->impulse = (Vector2){
-          .x =
-              fmin(30.0f, fabs(30.0f - uggy->body->velocity.x)) *
-              (self->player->body->aabb.x > uggy->body->aabb.x ? 1.0f : -1.0f) *
-              Clamp(frand(), 0.8f, 1.0f),
+          .x = floating * homing * Clamp(frand(), 0.8f, 1.0f),
           .y = -300.0 * Clamp(frand(), 0.8f, 1.0f),
       };
     }
@@ -827,10 +835,10 @@ void MorteGame__draw(MorteGame *self, float delta) {
 }
 
 enum GameStatus {
-  GAME_RUNNING,
-  GAME_PAUSED,
-  GAME_RESET,
-  GAME_DEBUGGING,
+  GAME_DO_RUN,
+  GAME_DO_PAUSE,
+  GAME_DO_RESET,
+  GAME_DO_DEBUG,
 };
 
 /*
@@ -842,6 +850,7 @@ enum GameStatus {
 enum GameStatus MorteGame__process_meta_input(MorteGame *self,
                                               DEBUG *debug_instance) {
   if (self->debug) {
+    self->debug->pause_game_after_this_frame = false;
     self->constants.player_walk_speed = 500.0;
 
     self->camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
@@ -852,17 +861,23 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
         MorteGame__spawn_uggy(self, i);
       }
     }
+
+    if (IsKeyPressed(KEY_N) || IsKeyPressedRepeat(KEY_N)) {
+      self->is_paused = false;
+      self->debug->pause_game_after_this_frame = true;
+    }
+
   } else {
     self->constants = DEFAULT_MORTE_GAME_CONSTANTS;
   }
 
   if (IsKeyDown(KEY_LEFT_CONTROL)) {
     if (IsKeyPressed(KEY_R)) {
-      return GAME_RESET;
+      return GAME_DO_RESET;
     }
 
     if (IsKeyPressed(KEY_D)) {
-      return GAME_DEBUGGING;
+      return GAME_DO_DEBUG;
     }
   }
 
@@ -871,10 +886,10 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
   }
 
   if (self->is_paused) {
-    return GAME_PAUSED;
+    return GAME_DO_PAUSE;
   }
 
-  return GAME_RUNNING;
+  return GAME_DO_RUN;
 }
 
 /* Perform game logic updates. */
@@ -883,10 +898,10 @@ void MorteGame__update(MorteGame *self, float delta) {
     Uggy *uggy = self->uggies[i];
 
     if (self->debug) {
-      printf("p %7.1f, %7.1f\tv %7.1f, %7.1f\ti %7.1f, %7.1f\n",
-             uggy->body->aabb.x, uggy->body->aabb.y, uggy->body->velocity.x,
-             uggy->body->velocity.y, uggy->body->impulse.x,
-             uggy->body->impulse.y);
+      printf("t %d\tp %7.1f, %7.1f\tv %7.1f, %7.1f\ti %7.1f, %7.1f\n",
+             uggy->type, uggy->body->aabb.x, uggy->body->aabb.y,
+             uggy->body->velocity.x, uggy->body->velocity.y,
+             uggy->body->impulse.x, uggy->body->impulse.y);
     }
 
     MorteGame__update_uggy(self, uggy, delta);
@@ -917,7 +932,7 @@ void MorteGame__update(MorteGame *self, float delta) {
     }
   }
 
-  MorteGame__process_simple_collisions(self, delta);
+  MorteGame__process_wall_collisions(self, delta);
 
   for (size_t i = 0; i < self->physics_body_count; i++) {
     PhysicsBody *body = self->physics_bodies[i];
@@ -969,7 +984,7 @@ int main(void) {
     float delta = GetFrameTime();
 
     switch (MorteGame__process_meta_input(&game, &debug_instance)) {
-    case GAME_DEBUGGING:
+    case GAME_DO_DEBUG:
       if (game.debug) {
         game.debug = NULL;
       } else {
@@ -977,7 +992,7 @@ int main(void) {
       }
       // Fall to game state update.
 
-    case GAME_RUNNING:
+    case GAME_DO_RUN:
       // Refresh debug drawing ready for this next frame frame.
       if (game.debug) {
         game.debug->draw_queue_length = 0;
@@ -986,12 +1001,15 @@ int main(void) {
       MorteGame__update(&game, delta);
       // Fall to draw.
 
-    case GAME_PAUSED:
+    case GAME_DO_PAUSE:
       // Skip game logic updates.
       MorteGame__draw(&game, delta);
+      if (game.debug && game.debug->pause_game_after_this_frame) {
+        game.is_paused = true;
+      }
       break;
 
-    case GAME_RESET:
+    case GAME_DO_RESET:
       // Start the game loop from the beginning.
       MorteGame__reset(&game, &debug_instance);
       // FIXME? For some reason the (keyboard) input presses stays "on" if a
