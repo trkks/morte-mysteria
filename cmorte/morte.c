@@ -39,7 +39,6 @@ typedef struct {
   Color color;
   Vector2 position;
   Vector2 size;
-  bool is_bordered;
   Vector2 end_position;
 } DEBUG_visual;
 
@@ -86,13 +85,12 @@ void DEBUG__draw_arrow(DEBUG *self, float start_x, float start_y, float end_x,
                                       .end_position = {end_x, end_y}});
 }
 
-void DEBUG__draw_bordered(DEBUG *self, Rectangle rec, Color color) {
+void DEBUG__draw_rectangle(DEBUG *self, Rectangle rec, Color color) {
   DEBUG__enqueue(self, (DEBUG_visual){
                            .type = RECTANGLE,
                            .color = color,
                            .position = {rec.x, rec.y},
                            .size = {rec.width, rec.height},
-                           .is_bordered = true,
                        });
 }
 
@@ -105,20 +103,15 @@ void DEBUG__draw(DEBUG *self) {
       DEBUG__draw_point_(self, object.position, object.color);
       break;
     case RECTANGLE:
-      Color base_color = object.color;
       Rectangle rec = (Rectangle){object.position.x, object.position.y,
                                   object.size.x, object.size.y};
-      if (object.is_bordered) {
-        // Make it so that the border sticks out of the shape a bit so that it
-        // can be seen even if right at the edge of the view frame.
-        rec.x -= 2.5f;
-        rec.y -= 2.5f;
-        rec.width += 5.0f;
-        rec.height += 5.0f;
-        DrawRectangleLinesEx(rec, 5, object.color);
-        base_color = GetColor(ColorToInt(base_color) & 0xff00ff77);
-      }
-      DrawRectangleRec(rec, base_color);
+      // Make it so that the border sticks out of the shape a bit so that it
+      // can be seen even if right at the edge of the view frame.
+      rec.x -= 2.5f;
+      rec.y -= 2.5f;
+      rec.width += 5.0f;
+      rec.height += 5.0f;
+      DrawRectangleLinesEx(rec, 5, object.color);
       break;
     case ARROW:
       float size = 6.0f;
@@ -169,15 +162,6 @@ Vector2 Rectangle__center(Rectangle self) {
   return (Vector2){self.x + self.width / 2.0f, self.y + self.height / 2.0f};
 }
 
-typedef struct {
-  /* This replaces using NULL as a flag if there was no collision. */
-  bool happened;
-  float depth;
-  /* This is the direction where the collider was moving when collision
-   * happened. */
-  Vector2 direction;
-} Collision;
-
 enum PhysicsType { STATIC, KINETIC };
 
 typedef struct {
@@ -189,6 +173,16 @@ typedef struct {
   /* This stores interactions for physics simulation during a single frame. */
   Vector2 impulse;
 } PhysicsBody;
+
+typedef struct {
+  /* The pointers a and b also work as a flag if there was a collision. */
+  PhysicsBody *a;
+  PhysicsBody *b;
+  float depth;
+  /* This is the direction where the collider was moving when collision
+   * happened. */
+  Vector2 direction;
+} Collision;
 
 PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
                               float mass) {
@@ -210,22 +204,23 @@ PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
  * https://gamedevelopment.tutsplus.com/tutorials/how-to-create-a-custom-2d-physics-engine-the-basics-and-impulse-resolution--gamedev-6331
  * - https://textbooks.cs.ksu.edu/cis580/04-collisions/index.html
  */
-Collision PhysicsBody__colliding(PhysicsBody *self, PhysicsBody other) {
+Collision PhysicsBody__colliding(PhysicsBody *self, PhysicsBody *other) {
   Vector2 self_half =
       Vector2Scale((Vector2){self->aabb.width, self->aabb.height}, 0.5f);
   Vector2 other_half =
-      Vector2Scale((Vector2){other.aabb.width, other.aabb.height}, 0.5f);
+      Vector2Scale((Vector2){other->aabb.width, other->aabb.height}, 0.5f);
   Vector2 distance = {
-      other.aabb.x + other_half.x - (self->aabb.x + self_half.x),
-      other.aabb.y + other_half.y - (self->aabb.y + self_half.y),
+      other->aabb.x + other_half.x - (self->aabb.x + self_half.x),
+      other->aabb.y + other_half.y - (self->aabb.y + self_half.y),
   };
 
   Vector2 overlap = {self_half.x + other_half.x - fabs(distance.x),
                      self_half.y + other_half.y - fabs(distance.y)};
 
-  Collision collision = {.happened = false};
+  Collision collision = {.a = NULL, .b = NULL};
   if (float__is_positive(overlap.x) && float__is_positive(overlap.y)) {
-    collision.happened = true;
+    collision.a = self;
+    collision.b = other;
 
     if (overlap.x < overlap.y) {
       collision.depth = overlap.x;
@@ -471,6 +466,8 @@ typedef struct {
   PhysicsBody **physics_bodies;
   Uggy **uggies;
   Animation **animations;
+  Collision *collisions;
+
   Background backgrounds[3];
   HUD hud;
   DEBUG *debug;
@@ -516,6 +513,12 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
               (self->physics_body_count + 1) * sizeof(PhysicsBody));
   self->physics_bodies[self->physics_body_count] = body;
   self->physics_body_count += 1;
+
+  // Collisions now have to take the new body into account.
+  self->collisions = realloc(
+      self->collisions, (self->physics_body_count * self->physics_body_count -
+                         self->physics_body_count) /
+                            2 * sizeof(Collision));
 }
 
 void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
@@ -529,52 +532,32 @@ void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
 void process_simple_collision(PhysicsBody *body, Collision collision) {}
 
 /**
- * Check for and report collisions between physics bodies preventing
- * KINETIC bodies from entering STATIC bodies (i.e., keep objects inside
- * the game bounds).
+ * Check for and report collisions between physics bodies preventing.
  */
-void MorteGame__process_wall_collisions(MorteGame *self, float delta) {
+size_t MorteGame__collisions(MorteGame *self, float delta) {
+  size_t k = 0;
+
   for (size_t i = 0; i < self->physics_body_count; i++) {
     PhysicsBody *a = self->physics_bodies[i];
 
     for (size_t j = i + 1; j < self->physics_body_count; j++) {
       PhysicsBody *b = self->physics_bodies[j];
 
-      PhysicsBody *collider, *collidee;
-      if (a->type == KINETIC && b->type == STATIC) {
-        collider = a;
-        collidee = b;
-      } else if (b->type == KINETIC && a->type == STATIC) {
-        collider = b;
-        collidee = a;
-      }
+      Collision collision = PhysicsBody__colliding(a, b);
+      if (collision.a && collision.b) {
 
-      Collision collision = PhysicsBody__colliding(collider, *collidee);
-
-      if (collision.happened) {
         if (self->debug) {
-          DEBUG__draw_bordered(self->debug, a->aabb, YELLOW);
-          DEBUG__draw_bordered(self->debug, b->aabb, YELLOW);
-          DEBUG__draw_direction(self->debug, a->aabb.x + a->aabb.width / 2,
-                                a->aabb.y + a->aabb.height / 2,
-                                collision.direction.x, collision.direction.y,
-                                YELLOW);
+          DEBUG__draw_rectangle(self->debug, collision.a->aabb, YELLOW);
+          DEBUG__draw_rectangle(self->debug, collision.b->aabb, YELLOW);
         }
 
-        // Separate the collider from the wall.
-        collider->aabb.x -= collision.direction.x * collision.depth;
-        collider->aabb.y -= collision.direction.y * collision.depth;
-
-        // Stop when dropping onto a platform.
-        if (float__eq(collision.direction.y, DOWN.y)) {
-          collider->velocity.y = 0;
-          collider->impulse.y = 0;
-        }
-
-        // TODO: Report collision event for object specific resolutions.
+        self->collisions[k] = collision;
+        k++;
       }
     }
   }
+
+  return k;
 }
 
 /*
@@ -897,13 +880,6 @@ void MorteGame__update(MorteGame *self, float delta) {
   for (size_t i = 0; i < self->uggy_count; i++) {
     Uggy *uggy = self->uggies[i];
 
-    if (self->debug) {
-      printf("t %d\tp %7.1f, %7.1f\tv %7.1f, %7.1f\ti %7.1f, %7.1f\n",
-             uggy->type, uggy->body->aabb.x, uggy->body->aabb.y,
-             uggy->body->velocity.x, uggy->body->velocity.y,
-             uggy->body->impulse.x, uggy->body->impulse.y);
-    }
-
     MorteGame__update_uggy(self, uggy, delta);
   }
 
@@ -928,16 +904,59 @@ void MorteGame__update(MorteGame *self, float delta) {
 
     if (self->debug) {
       // Debug the physics body movement result.
-      DEBUG__draw_bordered(self->debug, body->aabb, MAGENTA);
+      DEBUG__draw_rectangle(self->debug, body->aabb, MAGENTA);
     }
   }
 
-  MorteGame__process_wall_collisions(self, delta);
+  size_t collision_count = MorteGame__collisions(self, delta);
+
+  for (size_t i = 0; i < collision_count; i++) {
+    Collision c = self->collisions[i];
+
+    if (c.a->type != c.b->type) {
+      // Because of how collision checking is implemented, the walls (which keep
+      // objects inside the game area) need to be handled as collidees (STATIC
+      // "targets") in order to choose the correct direction in which to correct
+      // the moving (KINETIC "actors") body's position.
+      PhysicsBody *collider, *collidee = NULL;
+
+      if (c.a->type == KINETIC && c.b->type == STATIC) {
+        collider = c.a;
+        collidee = c.b;
+      } else {
+        collider = c.b;
+        collidee = c.a;
+        c.direction = Vector2Scale(c.direction, -1.0f);
+      }
+
+      // Separate the collider from the wall.
+      collider->aabb.x -= c.direction.x * c.depth;
+      collider->aabb.y -= c.direction.y * c.depth;
+
+      // Stop when dropping onto a platform.
+      if (float__eq(c.direction.y, DOWN.y)) {
+        collider->velocity.y = 0;
+        collider->impulse.y = 0;
+      }
+    }
+
+    // TODO: Handle object specific collision resolutions.
+  }
 
   for (size_t i = 0; i < self->physics_body_count; i++) {
     PhysicsBody *body = self->physics_bodies[i];
     // NOTE: Reset impulses for next frame.
     body->impulse = (Vector2){0};
+
+    if (self->debug) {
+      float vl = Vector2Length(body->velocity);
+      if (vl > 0) {
+        DEBUG__draw_direction(self->debug, body->aabb.x + body->aabb.width / 2,
+                              body->aabb.y + body->aabb.height / 2,
+                              body->velocity.x / vl, body->velocity.y / vl,
+                              GREEN);
+      }
+    }
   }
 
   self->cursor.position = GetScreenToWorld2D(GetMousePosition(), self->camera);
