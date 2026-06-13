@@ -146,6 +146,8 @@ void DEBUG__draw(DEBUG *self) {
     }
   }
 }
+
+void DEBUG__free(DEBUG *self) { free(self->draw_queue); }
 // -----------------------------------------------------------------------------
 
 float frand() { return (float)rand() / (float)RAND_MAX; }
@@ -162,10 +164,7 @@ Vector2 Rectangle__center(Rectangle self) {
   return (Vector2){self.x + self.width / 2.0f, self.y + self.height / 2.0f};
 }
 
-enum PhysicsType { STATIC, KINETIC };
-
 typedef struct {
-  enum PhysicsType type;
   Rectangle aabb;
   float mass;
   float inverse_mass;
@@ -175,19 +174,15 @@ typedef struct {
 } PhysicsBody;
 
 typedef struct {
-  /* The pointers a and b also work as a flag if there was a collision. */
-  PhysicsBody *a;
-  PhysicsBody *b;
+  bool happened;
   float depth;
   /* This is the direction where the collider was moving when collision
    * happened. */
   Vector2 direction;
 } Collision;
 
-PhysicsBody *PhysicsBody__new(enum PhysicsType type, Rectangle aabb,
-                              float mass) {
+PhysicsBody *PhysicsBody__new(Rectangle aabb, float mass) {
   PhysicsBody *self = malloc(sizeof(PhysicsBody));
-  self->type = type;
   self->aabb = aabb;
   self->mass = mass;
   self->inverse_mass = 1.0f / mass;
@@ -217,11 +212,9 @@ Collision PhysicsBody__colliding(PhysicsBody *self, PhysicsBody *other) {
   Vector2 overlap = {self_half.x + other_half.x - fabs(distance.x),
                      self_half.y + other_half.y - fabs(distance.y)};
 
-  Collision collision = {.a = NULL, .b = NULL};
+  Collision collision = {.happened = false};
   if (float__is_positive(overlap.x) && float__is_positive(overlap.y)) {
-    collision.a = self;
-    collision.b = other;
-
+    collision.happened = true;
     if (overlap.x < overlap.y) {
       collision.depth = overlap.x;
       collision.direction = (Vector2){distance.x > 0 ? 1 : -1, 0};
@@ -329,12 +322,36 @@ void Animation__free(Animation *self) {
   free(self->frames);
 }
 
-enum EntityType { PRIEST = 0, SNAKE, WACKO, GULL, HAND };
+/* This enum works as a mask to match into the different categories of
+ * EntityTypes. */
+enum EntityCategory {
+  PROP = 0x0000ff,
+  UGGY = 0x00ff00,
+  LOOT = 0xff0000,
+};
+
+enum EntityType {
+  WALL = PROP,
+
+  WACKO = UGGY,
+  HAND,
+  SNAKE,
+  GULL,
+  PRIEST,
+
+  GRENADE = LOOT,
+  HAT,
+  CANNABIS,
+  SAW,
+  MUSHROOM,
+  WINE,
+};
 
 /*
- * Represents objects/characters animated in the game world.
+ * Represents objects/characters in the game world.
  */
 typedef struct {
+  enum EntityCategory category;
   enum EntityType type;
   PhysicsBody *body;
   Animation *animation;
@@ -345,22 +362,20 @@ typedef struct {
 Entity *Entity__new(enum EntityType type, PhysicsBody *body,
                     Animation *animation) {
   Entity *self = malloc(sizeof(Entity));
+  if (type < (int)LOOT) {
+    if (type < (int)UGGY) {
+      self->category = PROP;
+    } else {
+      self->category = UGGY;
+    }
+  } else {
+    self->category = LOOT;
+  }
   self->type = type;
   self->body = body;
   self->animation = animation;
   return self;
 }
-
-enum PropType { LOOT };
-
-/*
- * Represents objects/items stationary in the game world.
- */
-typedef struct {
-  enum PropType type;
-  PhysicsBody *body;
-  Animation animation;
-} Prop;
 
 typedef struct {
   Vector2 position;
@@ -417,24 +432,34 @@ void Entity__draw_priest_eye(Entity *self, Camera2D camera, Cursor cursor,
 }
 
 void Entity__draw(Entity *self, Camera2D camera, Cursor cursor) {
-  DrawTexture(self->animation->frames[self->animation->current_frame],
-              self->body->aabb.x, self->body->aabb.y, WHITE);
+  if (self->animation) {
+    DrawTexture(self->animation->frames[self->animation->current_frame],
+                self->body->aabb.x, self->body->aabb.y, WHITE);
+  }
 
   switch (self->type) {
+  case WALL:
+    break;
+  case WACKO:
+    break;
+  case HAND:
+    break;
+  case SNAKE:
+    break;
+  case GULL:
+    break;
   case PRIEST:
     Entity__draw_priest_eye(self, camera, cursor, true);
     Entity__draw_priest_eye(self, camera, cursor, false);
     break;
-  case SNAKE:
-    break;
-  case WACKO:
-    break;
-  case GULL:
-    break;
-  case HAND:
-    break;
   }
 }
+
+typedef struct {
+  Entity *a;
+  Entity *b;
+  Collision collision;
+} CollisionPair;
 
 typedef struct {
   Texture2D border;
@@ -453,8 +478,6 @@ const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
 typedef struct {
   bool is_paused;
   MorteGameConstants constants;
-  // Bounds consisting of ground, "ceiling" and two vertical walls.
-  PhysicsBody *level_bounds[3];
   Vector2 view_size;
   float gravity;
   Cursor cursor;
@@ -465,9 +488,9 @@ typedef struct {
   size_t physics_body_count;
   size_t entity_count;
   PhysicsBody **physics_bodies;
-  Entity **uggies;
+  Entity **entities;
   Animation **animations;
-  Collision *collisions;
+  CollisionPair *collision_pairs;
 
   Background backgrounds[3];
   HUD hud;
@@ -486,24 +509,28 @@ void MorteGame__free(MorteGame *self) {
   free(self->physics_bodies);
 
   // NOTE: Need to destroy this before destroying player along with other
-  // uggies.
+  // entities.
   UnloadTexture(self->player->eye_texture);
 
   for (size_t i = 0; i < self->entity_count; i++) {
-    free(self->uggies[i]);
+    free(self->entities[i]);
   }
-  free(self->uggies);
+  free(self->entities);
 
   for (size_t i = 0; i < 3; i++) {
     UnloadTexture(self->backgrounds[i].texture);
   }
 
   UnloadTexture(self->hud.border);
+
+  free(self->collision_pairs);
+
+  DEBUG__free(self->debug);
 }
 
 void MorteGame__add_animation(MorteGame *self, Animation *animation) {
   self->animations = realloc(self->animations,
-                             (self->animation_count + 1) * sizeof(Animation));
+                             (self->animation_count + 1) * sizeof(Animation *));
   self->animations[self->animation_count] = animation;
   self->animation_count += 1;
 }
@@ -511,7 +538,7 @@ void MorteGame__add_animation(MorteGame *self, Animation *animation) {
 void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   self->physics_bodies =
       realloc(self->physics_bodies,
-              (self->physics_body_count + 1) * sizeof(PhysicsBody));
+              (self->physics_body_count + 1) * sizeof(PhysicsBody *));
   self->physics_bodies[self->physics_body_count] = body;
   self->physics_body_count += 1;
 
@@ -519,17 +546,19 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   size_t max_collisions = (self->physics_body_count * self->physics_body_count -
                            self->physics_body_count) /
                           2;
-  self->collisions =
-      realloc(self->collisions, max_collisions * sizeof(Collision));
+  self->collision_pairs =
+      realloc(self->collision_pairs, max_collisions * sizeof(CollisionPair));
 }
 
 void MorteGame__add_entity(MorteGame *self, Entity *entity) {
-  self->uggies =
-      realloc(self->uggies, (self->entity_count + 1) * sizeof(Entity));
-  self->uggies[self->entity_count] = entity;
+  self->entities =
+      realloc(self->entities, (self->entity_count + 1) * sizeof(Entity *));
+  self->entities[self->entity_count] = entity;
   self->entity_count += 1;
   MorteGame__add_physics_body(self, entity->body);
-  MorteGame__add_animation(self, entity->animation);
+  if (entity->animation) {
+    MorteGame__add_animation(self, entity->animation);
+  }
 }
 
 /**
@@ -538,27 +567,68 @@ void MorteGame__add_entity(MorteGame *self, Entity *entity) {
 size_t MorteGame__collisions(MorteGame *self, float delta) {
   size_t k = 0;
 
-  for (size_t i = 0; i < self->physics_body_count; i++) {
-    PhysicsBody *a = self->physics_bodies[i];
+  for (size_t i = 0; i < self->entity_count; i++) {
+    Entity *a = self->entities[i];
 
-    for (size_t j = i + 1; j < self->physics_body_count; j++) {
-      PhysicsBody *b = self->physics_bodies[j];
+    for (size_t j = i + 1; j < self->entity_count; j++) {
+      Entity *b = self->entities[j];
 
-      Collision collision = PhysicsBody__colliding(a, b);
-      if (collision.a && collision.b) {
-
+      Collision collision = PhysicsBody__colliding(a->body, b->body);
+      if (collision.happened) {
         if (self->debug) {
-          DEBUG__draw_rectangle(self->debug, collision.a->aabb, YELLOW);
-          DEBUG__draw_rectangle(self->debug, collision.b->aabb, YELLOW);
+          DEBUG__draw_rectangle(self->debug, a->body->aabb, YELLOW);
+          DEBUG__draw_rectangle(self->debug, b->body->aabb, YELLOW);
         }
 
-        self->collisions[k] = collision;
+        self->collision_pairs[k] =
+            (CollisionPair){.a = a, .b = b, .collision = collision};
         k++;
       }
     }
   }
 
   return k;
+}
+
+void MorteGame__collide_to_wall(Entity *e, Collision collision) {
+  // Separate the collider from the wall.
+  e->body->aabb.x -= collision.direction.x * collision.depth;
+  e->body->aabb.y -= collision.direction.y * collision.depth;
+
+  // Stop when dropping onto a platform.
+  if (float__eq(collision.direction.y, DOWN.y)) {
+    e->body->velocity.y = 0;
+    e->body->impulse.y = 0;
+  }
+}
+
+void MorteGame__resolve_collision(MorteGame *self, CollisionPair c) {
+  switch (c.a->type) {
+  case WALL:
+    printf("Wall hit %d\n", c.b->type);
+
+    if (c.b->type & UGGY) {
+      // Because of how collision checking is implemented, the walls (which keep
+      // objects inside the game area) need to be handled as collidees
+      // ("targets") in order to choose the correct direction in which to
+      // correct the moving bodies' ("actors") positions.
+      Collision flipped = c.collision;
+      flipped.direction = Vector2Scale(flipped.direction, -1.0f);
+      MorteGame__collide_to_wall(c.b, flipped);
+    }
+    break;
+  default:
+    // Match by categories.
+    if (c.a->type & UGGY) {
+      printf("Uggy hit %d\n", c.b->type);
+
+      switch (c.b->type) {
+      case WALL:
+        MorteGame__collide_to_wall(c.a, c.collision);
+        break;
+      }
+    }
+  }
 }
 
 /*
@@ -588,6 +658,29 @@ void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
 
 void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
   switch (type) {
+  case WALL:
+    break;
+  case WACKO:
+    break;
+  case HAND:
+    break;
+  case SNAKE:
+    break;
+  case GULL:
+    Animation *gull_animation = Animation__from_path_template(
+        "content/uggies/gull/lokki%04d.png", ANIMATION_FRAME_COUNT_GULL,
+        ANIMATION_LENGTH_MILLIS_GULL);
+    Entity *gull = Entity__new(
+        GULL,
+        PhysicsBody__new((Rectangle){self->player->body->aabb.x + 50,
+                                     self->player->body->aabb.y - 50,
+                                     gull_animation->frames[0].width,
+                                     gull_animation->frames[0].height},
+                         20),
+        gull_animation);
+    gull->animation->state = LOOPING;
+    MorteGame__add_entity(self, gull);
+    break;
   case PRIEST:
     if (self->player != NULL) {
       puts("\033[31mAttempted adding player twice\033[0m");
@@ -602,7 +695,7 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
     self->player = Entity__new(
         PRIEST,
         PhysicsBody__new(
-            KINETIC,
+
             (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT - player_texture.height,
                         player_texture.width, player_texture.height},
             100),
@@ -614,32 +707,24 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
     // Adding to sim.
     MorteGame__add_entity(self, self->player);
     break;
-  case SNAKE:
-    break;
-  case WACKO:
-    break;
-  case GULL:
-    Animation *gull_animation = Animation__from_path_template(
-        "content/uggies/gull/lokki%04d.png", ANIMATION_FRAME_COUNT_GULL,
-        ANIMATION_LENGTH_MILLIS_GULL);
-    Entity *gull = Entity__new(
-        GULL,
-        PhysicsBody__new(KINETIC,
-                         (Rectangle){self->player->body->aabb.x + 50,
-                                     self->player->body->aabb.y - 50,
-                                     gull_animation->frames[0].width,
-                                     gull_animation->frames[0].height},
-                         20),
-        gull_animation);
-    gull->animation->state = LOOPING;
-    MorteGame__add_entity(self, gull);
-    break;
-  case HAND:
-    break;
   }
 }
 MorteGame MorteGame__initialize() {
-  MorteGame game = {0};
+  MorteGame game = {
+      .is_paused = false,
+      .constants = DEFAULT_MORTE_GAME_CONSTANTS,
+      .view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT},
+      .gravity = 10.0f,
+      .player = NULL,
+      .animation_count = 0,
+      .physics_body_count = 0,
+      .entity_count = 0,
+      .physics_bodies = NULL,
+      .entities = NULL,
+      .animations = NULL,
+      .collision_pairs = NULL,
+      .debug = NULL,
+  };
 
   game.camera = (Camera2D){0};
   float window_scale = WINDOW_HEIGHT / LEVEL_HEIGHT;
@@ -678,18 +763,29 @@ MorteGame MorteGame__initialize() {
   game.constants = DEFAULT_MORTE_GAME_CONSTANTS;
 
   // Ground.
-  game.level_bounds[0] = PhysicsBody__new(
-      STATIC, (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT, LEVEL_WIDTH, 50}, 0);
-  // Left wall.
-  game.level_bounds[1] = PhysicsBody__new(
-      STATIC, (Rectangle){-LEVEL_WIDTH / 2 - 50, 0, 50, LEVEL_HEIGHT}, 0);
-  // Right wall.
-  game.level_bounds[2] = PhysicsBody__new(
-      STATIC, (Rectangle){LEVEL_WIDTH / 2, 0, 50, LEVEL_HEIGHT}, 0);
+  MorteGame__add_entity(
+      &game,
+      Entity__new(
+          WALL,
+          PhysicsBody__new(
+              (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT, LEVEL_WIDTH, 50}, 0),
+          NULL));
 
-  MorteGame__add_physics_body(&game, game.level_bounds[0]);
-  MorteGame__add_physics_body(&game, game.level_bounds[1]);
-  MorteGame__add_physics_body(&game, game.level_bounds[2]);
+  // Left wall.
+  MorteGame__add_entity(
+      &game, Entity__new(WALL,
+                         PhysicsBody__new((Rectangle){-LEVEL_WIDTH / 2 - 50, 0,
+                                                      50, LEVEL_HEIGHT},
+                                          0),
+                         NULL));
+
+  // Right wall.
+  MorteGame__add_entity(
+      &game,
+      Entity__new(WALL,
+                  PhysicsBody__new(
+                      (Rectangle){LEVEL_WIDTH / 2, 0, 50, LEVEL_HEIGHT}, 0),
+                  NULL));
 
   game.gravity = 10.0f;
   // ---------------------------------------------------------------------------
@@ -711,8 +807,29 @@ MorteGame MorteGame__reset(MorteGame *self, DEBUG *debug_instance) {
   }
 }
 
-void MorteGame__update_entity(MorteGame *self, Entity *entity, float delta) {
+void MorteGame__behave_entity(MorteGame *self, Entity *entity) {
   switch (entity->type) {
+  case WALL:
+    break;
+  case WACKO:
+    break;
+  case HAND:
+    break;
+  case SNAKE:
+    break;
+  case GULL:
+    if (entity->body->aabb.y > 50.0f) {
+      float floating = fmin(30.0f, fabs(30.0f - entity->body->velocity.x));
+      float homing = Rectangle__center(self->player->body->aabb).x >
+                             Rectangle__center(entity->body->aabb).x
+                         ? 1.0f
+                         : -1.0f;
+      entity->body->impulse = (Vector2){
+          .x = floating * homing * Clamp(frand(), 0.8f, 1.0f),
+          .y = -300.0 * Clamp(frand(), 0.8f, 1.0f),
+      };
+    }
+    break;
   case PRIEST:
     // Player character input handling.
 
@@ -743,25 +860,12 @@ void MorteGame__update_entity(MorteGame *self, Entity *entity, float delta) {
     entity->body->velocity.x = horizontal.x;
 
     break;
-  case SNAKE:
-    break;
-  case WACKO:
-    break;
-  case GULL:
-    if (entity->body->aabb.y > 50.0f) {
-      float floating = fmin(30.0f, fabs(30.0f - entity->body->velocity.x));
-      float homing = Rectangle__center(self->player->body->aabb).x >
-                             Rectangle__center(entity->body->aabb).x
-                         ? 1.0f
-                         : -1.0f;
-      entity->body->impulse = (Vector2){
-          .x = floating * homing * Clamp(frand(), 0.8f, 1.0f),
-          .y = -300.0 * Clamp(frand(), 0.8f, 1.0f),
-      };
-    }
-    break;
-  case HAND:
-    break;
+  }
+
+  // Consider gravity.
+  if (entity->category != PROP && !float__eq(entity->body->velocity.y, 0)) {
+    // Only apply gravity on objects moving in the air.
+    entity->body->impulse.y += self->gravity * entity->body->mass;
   }
 }
 
@@ -778,7 +882,7 @@ void MorteGame__draw(MorteGame *self, float delta) {
   }
 
   for (size_t i = 0; i < self->entity_count; i++) {
-    Entity__draw(self->uggies[i], self->camera, self->cursor);
+    Entity__draw(self->entities[i], self->camera, self->cursor);
   }
 
   DrawTexture(self->backgrounds[2].texture, self->backgrounds[2].position.x,
@@ -840,8 +944,8 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
     self->camera.zoom += ((float)GetMouseWheelMove() * 0.05f);
 
     // Enemy spawn control.
-    for (size_t i = SNAKE; i < HAND; i++) {
-      if (IsKeyPressed(KEY_ZERO + i)) {
+    for (size_t i = WACKO + 1; i <= GULL; i++) {
+      if (IsKeyPressed(KEY_ZERO + i - WACKO)) {
         MorteGame__spawn_entity(self, i);
       }
     }
@@ -879,18 +983,7 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
 /* Perform game logic updates. */
 void MorteGame__update(MorteGame *self, float delta) {
   for (size_t i = 0; i < self->entity_count; i++) {
-    Entity *entity = self->uggies[i];
-
-    MorteGame__update_entity(self, entity, delta);
-  }
-
-  // Consider gravity.
-  for (size_t i = 0; i < self->physics_body_count; i++) {
-    PhysicsBody *body = self->physics_bodies[i];
-    if (body->type == KINETIC && !float__eq(body->velocity.y, 0)) {
-      // Only apply gravity on objects moving in the air.
-      body->impulse.y += self->gravity * body->mass;
-    }
+    MorteGame__behave_entity(self, self->entities[i]);
   }
 
   // Integrate movement.
@@ -907,47 +1000,7 @@ void MorteGame__update(MorteGame *self, float delta) {
       // Debug the physics body movement result.
       DEBUG__draw_rectangle(self->debug, body->aabb, MAGENTA);
     }
-  }
 
-  size_t collision_count = MorteGame__collisions(self, delta);
-
-  for (size_t i = 0; i < collision_count; i++) {
-    Collision collision = self->collisions[i];
-
-    if (collision.a->type != collision.b->type) {
-      // Because of how collision checking is implemented, the walls (which keep
-      // objects inside the game area) need to be handled as collidees (STATIC
-      // "targets") in order to choose the correct direction in which to correct
-      // the moving (KINETIC "actors") body's position.
-      PhysicsBody *collider, *collidee = NULL;
-      Vector2 collider_direction = {0};
-
-      if (collision.a->type == KINETIC && collision.b->type == STATIC) {
-        collider = collision.a;
-        collidee = collision.b;
-        collider_direction = collision.direction;
-      } else {
-        collider = collision.b;
-        collidee = collision.a;
-        collider_direction = Vector2Scale(collision.direction, -1.0f);
-      }
-
-      // Separate the collider from the wall.
-      collider->aabb.x -= collider_direction.x * collision.depth;
-      collider->aabb.y -= collider_direction.y * collision.depth;
-
-      // Stop when dropping onto a platform.
-      if (float__eq(collision.direction.y, DOWN.y)) {
-        collider->velocity.y = 0;
-        collider->impulse.y = 0;
-      }
-    }
-
-    // TODO: Handle object specific collision resolutions.
-  }
-
-  for (size_t i = 0; i < self->physics_body_count; i++) {
-    PhysicsBody *body = self->physics_bodies[i];
     // NOTE: Reset impulses for next frame.
     body->impulse = (Vector2){0};
 
@@ -960,6 +1013,15 @@ void MorteGame__update(MorteGame *self, float delta) {
                               GREEN);
       }
     }
+  }
+
+  // Check and resolve collisions in bulk to avoid movement between collisions
+  // (i.e., in the same frame X collides with Y and immediately moves out of
+  // the way, but then Z does not detect collision with the now moved X).
+  size_t collision_count = MorteGame__collisions(self, delta);
+
+  for (size_t i = 0; i < collision_count; i++) {
+    MorteGame__resolve_collision(self, self->collision_pairs[i]);
   }
 
   self->cursor.position = GetScreenToWorld2D(GetMousePosition(), self->camera);
@@ -998,7 +1060,11 @@ int main(void) {
   DisableCursor();
 
   // DEBUG
-  DEBUG debug_instance = {0};
+  DEBUG debug_instance = {
+      .draw_queue_length = 0,
+      .draw_queue = NULL,
+      .pause_game_after_this_frame = false,
+  };
 
   MorteGame game = MorteGame__reset(NULL, &debug_instance);
 
