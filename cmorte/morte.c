@@ -26,6 +26,11 @@
 #define ANIMATION_FRAME_COUNT_GULL 19
 #define ANIMATION_LENGTH_MILLIS_GULL 1000
 
+#define APPEND(list, length, type, item)                                       \
+  list = realloc(list, (length + 1) * sizeof(type));                           \
+  list[length] = item;                                                         \
+  length += 1;
+
 // DEBUG
 // -----------------------------------------------------------------------------
 enum DEBUG_visual_type {
@@ -49,10 +54,7 @@ typedef struct {
 } DEBUG;
 
 void DEBUG__enqueue(DEBUG *self, DEBUG_visual object) {
-  self->draw_queue = realloc(self->draw_queue, (self->draw_queue_length + 1) *
-                                                   sizeof(DEBUG_visual));
-  self->draw_queue[self->draw_queue_length] = object;
-  self->draw_queue_length += 1;
+  APPEND(self->draw_queue, self->draw_queue_length, DEBUG_visual, object);
 }
 
 void DEBUG__draw_point_(DEBUG *self, Vector2 pos, Color color) {
@@ -529,18 +531,11 @@ void MorteGame__free(MorteGame *self) {
 }
 
 void MorteGame__add_animation(MorteGame *self, Animation *animation) {
-  self->animations = realloc(self->animations,
-                             (self->animation_count + 1) * sizeof(Animation *));
-  self->animations[self->animation_count] = animation;
-  self->animation_count += 1;
+  APPEND(self->animations, self->animation_count, Animation *, animation);
 }
 
 void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
-  self->physics_bodies =
-      realloc(self->physics_bodies,
-              (self->physics_body_count + 1) * sizeof(PhysicsBody *));
-  self->physics_bodies[self->physics_body_count] = body;
-  self->physics_body_count += 1;
+  APPEND(self->physics_bodies, self->physics_body_count, PhysicsBody *, body);
 
   // Amount of possible collisions is increased by addition of a new body.
   size_t max_collisions = (self->physics_body_count * self->physics_body_count -
@@ -551,11 +546,10 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
 }
 
 void MorteGame__add_entity(MorteGame *self, Entity *entity) {
-  self->entities =
-      realloc(self->entities, (self->entity_count + 1) * sizeof(Entity *));
-  self->entities[self->entity_count] = entity;
-  self->entity_count += 1;
+  APPEND(self->entities, self->entity_count, Entity *, entity);
+
   MorteGame__add_physics_body(self, entity->body);
+
   if (entity->animation) {
     MorteGame__add_animation(self, entity->animation);
   }
