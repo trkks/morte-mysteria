@@ -514,11 +514,12 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   self->physics_bodies[self->physics_body_count] = body;
   self->physics_body_count += 1;
 
-  // Collisions now have to take the new body into account.
-  self->collisions = realloc(
-      self->collisions, (self->physics_body_count * self->physics_body_count -
-                         self->physics_body_count) /
-                            2 * sizeof(Collision));
+  // Amount of possible collisions is increased by addition of a new body.
+  size_t max_collisions = (self->physics_body_count * self->physics_body_count -
+                           self->physics_body_count) /
+                          2;
+  self->collisions =
+      realloc(self->collisions, max_collisions * sizeof(Collision));
 }
 
 void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
@@ -528,8 +529,6 @@ void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
   MorteGame__add_physics_body(self, uggy->body);
   MorteGame__add_animation(self, uggy->animation);
 }
-
-void process_simple_collision(PhysicsBody *body, Collision collision) {}
 
 /**
  * Check for and report collisions between physics bodies preventing.
@@ -911,30 +910,32 @@ void MorteGame__update(MorteGame *self, float delta) {
   size_t collision_count = MorteGame__collisions(self, delta);
 
   for (size_t i = 0; i < collision_count; i++) {
-    Collision c = self->collisions[i];
+    Collision collision = self->collisions[i];
 
-    if (c.a->type != c.b->type) {
+    if (collision.a->type != collision.b->type) {
       // Because of how collision checking is implemented, the walls (which keep
       // objects inside the game area) need to be handled as collidees (STATIC
       // "targets") in order to choose the correct direction in which to correct
       // the moving (KINETIC "actors") body's position.
       PhysicsBody *collider, *collidee = NULL;
+      Vector2 collider_direction = {0};
 
-      if (c.a->type == KINETIC && c.b->type == STATIC) {
-        collider = c.a;
-        collidee = c.b;
+      if (collision.a->type == KINETIC && collision.b->type == STATIC) {
+        collider = collision.a;
+        collidee = collision.b;
+        collider_direction = collision.direction;
       } else {
-        collider = c.b;
-        collidee = c.a;
-        c.direction = Vector2Scale(c.direction, -1.0f);
+        collider = collision.b;
+        collidee = collision.a;
+        collider_direction = Vector2Scale(collision.direction, -1.0f);
       }
 
       // Separate the collider from the wall.
-      collider->aabb.x -= c.direction.x * c.depth;
-      collider->aabb.y -= c.direction.y * c.depth;
+      collider->aabb.x -= collider_direction.x * collision.depth;
+      collider->aabb.y -= collider_direction.y * collision.depth;
 
       // Stop when dropping onto a platform.
-      if (float__eq(c.direction.y, DOWN.y)) {
+      if (float__eq(collision.direction.y, DOWN.y)) {
         collider->velocity.y = 0;
         collider->impulse.y = 0;
       }
