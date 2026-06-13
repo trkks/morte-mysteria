@@ -329,21 +329,22 @@ void Animation__free(Animation *self) {
   free(self->frames);
 }
 
-enum UggyType { PRIEST = 0, SNAKE, WACKO, GULL, HAND };
+enum EntityType { PRIEST = 0, SNAKE, WACKO, GULL, HAND };
 
 /*
  * Represents objects/characters animated in the game world.
  */
 typedef struct {
-  enum UggyType type;
+  enum EntityType type;
   PhysicsBody *body;
   Animation *animation;
   // For PRIEST type.
   Texture2D eye_texture;
-} Uggy;
+} Entity;
 
-Uggy *Uggy__new(enum UggyType type, PhysicsBody *body, Animation *animation) {
-  Uggy *self = malloc(sizeof(Uggy));
+Entity *Entity__new(enum EntityType type, PhysicsBody *body,
+                    Animation *animation) {
+  Entity *self = malloc(sizeof(Entity));
   self->type = type;
   self->body = body;
   self->animation = animation;
@@ -381,8 +382,8 @@ float degrees_between(Vector2 from, Vector2 to) {
   return radians * (180.0f / PI);
 }
 
-void Uggy__draw_priest_eye(Uggy *self, Camera2D camera, Cursor cursor,
-                           bool left_side) {
+void Entity__draw_priest_eye(Entity *self, Camera2D camera, Cursor cursor,
+                             bool left_side) {
   // Eye in own coordinates.
   Vector2 independent_eye_pos = {self->eye_texture.width / 2,
                                  self->eye_texture.height / 2};
@@ -415,14 +416,14 @@ void Uggy__draw_priest_eye(Uggy *self, Camera2D camera, Cursor cursor,
       WHITE);
 }
 
-void Uggy__draw(Uggy *self, Camera2D camera, Cursor cursor) {
+void Entity__draw(Entity *self, Camera2D camera, Cursor cursor) {
   DrawTexture(self->animation->frames[self->animation->current_frame],
               self->body->aabb.x, self->body->aabb.y, WHITE);
 
   switch (self->type) {
   case PRIEST:
-    Uggy__draw_priest_eye(self, camera, cursor, true);
-    Uggy__draw_priest_eye(self, camera, cursor, false);
+    Entity__draw_priest_eye(self, camera, cursor, true);
+    Entity__draw_priest_eye(self, camera, cursor, false);
     break;
   case SNAKE:
     break;
@@ -458,13 +459,13 @@ typedef struct {
   float gravity;
   Cursor cursor;
   Camera2D camera;
-  // Convenience handle to the player Uggy.
-  Uggy *player;
+  // Convenience handle to the player Entity.
+  Entity *player;
   size_t animation_count;
   size_t physics_body_count;
-  size_t uggy_count;
+  size_t entity_count;
   PhysicsBody **physics_bodies;
-  Uggy **uggies;
+  Entity **uggies;
   Animation **animations;
   Collision *collisions;
 
@@ -488,7 +489,7 @@ void MorteGame__free(MorteGame *self) {
   // uggies.
   UnloadTexture(self->player->eye_texture);
 
-  for (size_t i = 0; i < self->uggy_count; i++) {
+  for (size_t i = 0; i < self->entity_count; i++) {
     free(self->uggies[i]);
   }
   free(self->uggies);
@@ -522,12 +523,13 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
       realloc(self->collisions, max_collisions * sizeof(Collision));
 }
 
-void MorteGame__add_uggy(MorteGame *self, Uggy *uggy) {
-  self->uggies = realloc(self->uggies, (self->uggy_count + 1) * sizeof(Uggy));
-  self->uggies[self->uggy_count] = uggy;
-  self->uggy_count += 1;
-  MorteGame__add_physics_body(self, uggy->body);
-  MorteGame__add_animation(self, uggy->animation);
+void MorteGame__add_entity(MorteGame *self, Entity *entity) {
+  self->uggies =
+      realloc(self->uggies, (self->entity_count + 1) * sizeof(Entity));
+  self->uggies[self->entity_count] = entity;
+  self->entity_count += 1;
+  MorteGame__add_physics_body(self, entity->body);
+  MorteGame__add_animation(self, entity->animation);
 }
 
 /**
@@ -584,7 +586,7 @@ void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
   }
 }
 
-void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
+void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
   switch (type) {
   case PRIEST:
     if (self->player != NULL) {
@@ -597,7 +599,7 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
     Texture2D eye_texture = LoadTexture("content/silma.png");
 
     // Initialization.
-    self->player = Uggy__new(
+    self->player = Entity__new(
         PRIEST,
         PhysicsBody__new(
             KINETIC,
@@ -610,7 +612,7 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
     self->player->eye_texture = eye_texture;
 
     // Adding to sim.
-    MorteGame__add_uggy(self, self->player);
+    MorteGame__add_entity(self, self->player);
     break;
   case SNAKE:
     break;
@@ -620,7 +622,7 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
     Animation *gull_animation = Animation__from_path_template(
         "content/uggies/gull/lokki%04d.png", ANIMATION_FRAME_COUNT_GULL,
         ANIMATION_LENGTH_MILLIS_GULL);
-    Uggy *gull = Uggy__new(
+    Entity *gull = Entity__new(
         GULL,
         PhysicsBody__new(KINETIC,
                          (Rectangle){self->player->body->aabb.x + 50,
@@ -630,7 +632,7 @@ void MorteGame__spawn_uggy(MorteGame *self, enum UggyType type) {
                          20),
         gull_animation);
     gull->animation->state = LOOPING;
-    MorteGame__add_uggy(self, gull);
+    MorteGame__add_entity(self, gull);
     break;
   case HAND:
     break;
@@ -654,7 +656,7 @@ MorteGame MorteGame__initialize() {
   game.cursor.animation->state = LOOPING;
   MorteGame__add_animation(&game, game.cursor.animation);
 
-  MorteGame__spawn_uggy(&game, PRIEST);
+  MorteGame__spawn_entity(&game, PRIEST);
 
   game.hud = (HUD){.border = LoadTexture("content/border.png")};
 
@@ -709,8 +711,8 @@ MorteGame MorteGame__reset(MorteGame *self, DEBUG *debug_instance) {
   }
 }
 
-void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
-  switch (uggy->type) {
+void MorteGame__update_entity(MorteGame *self, Entity *entity, float delta) {
+  switch (entity->type) {
   case PRIEST:
     // Player character input handling.
 
@@ -729,16 +731,16 @@ void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
     if (float__eq(self->player->body->velocity.y, 0)) {
       // Jump from the ground into the air.
       if (IsKeyDown(KEY_SPACE)) {
-        uggy->body->velocity.y = -self->constants.player_jump_speed;
+        entity->body->velocity.y = -self->constants.player_jump_speed;
       }
     } else {
       // Make air-strafing a bit harder than ground movement.
-      uggy->body->impulse.x *= 0.95f;
+      entity->body->impulse.x *= 0.95f;
     }
 
     // Apply straight to velocity in order to avoid having to wait speeding
     // up.
-    uggy->body->velocity.x = horizontal.x;
+    entity->body->velocity.x = horizontal.x;
 
     break;
   case SNAKE:
@@ -746,13 +748,13 @@ void MorteGame__update_uggy(MorteGame *self, Uggy *uggy, float delta) {
   case WACKO:
     break;
   case GULL:
-    if (uggy->body->aabb.y > 50.0f) {
-      float floating = fmin(30.0f, fabs(30.0f - uggy->body->velocity.x));
+    if (entity->body->aabb.y > 50.0f) {
+      float floating = fmin(30.0f, fabs(30.0f - entity->body->velocity.x));
       float homing = Rectangle__center(self->player->body->aabb).x >
-                             Rectangle__center(uggy->body->aabb).x
+                             Rectangle__center(entity->body->aabb).x
                          ? 1.0f
                          : -1.0f;
-      uggy->body->impulse = (Vector2){
+      entity->body->impulse = (Vector2){
           .x = floating * homing * Clamp(frand(), 0.8f, 1.0f),
           .y = -300.0 * Clamp(frand(), 0.8f, 1.0f),
       };
@@ -775,8 +777,8 @@ void MorteGame__draw(MorteGame *self, float delta) {
                 self->backgrounds[i].position.y, WHITE);
   }
 
-  for (size_t i = 0; i < self->uggy_count; i++) {
-    Uggy__draw(self->uggies[i], self->camera, self->cursor);
+  for (size_t i = 0; i < self->entity_count; i++) {
+    Entity__draw(self->uggies[i], self->camera, self->cursor);
   }
 
   DrawTexture(self->backgrounds[2].texture, self->backgrounds[2].position.x,
@@ -840,7 +842,7 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
     // Enemy spawn control.
     for (size_t i = SNAKE; i < HAND; i++) {
       if (IsKeyPressed(KEY_ZERO + i)) {
-        MorteGame__spawn_uggy(self, i);
+        MorteGame__spawn_entity(self, i);
       }
     }
 
@@ -876,10 +878,10 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
 
 /* Perform game logic updates. */
 void MorteGame__update(MorteGame *self, float delta) {
-  for (size_t i = 0; i < self->uggy_count; i++) {
-    Uggy *uggy = self->uggies[i];
+  for (size_t i = 0; i < self->entity_count; i++) {
+    Entity *entity = self->uggies[i];
 
-    MorteGame__update_uggy(self, uggy, delta);
+    MorteGame__update_entity(self, entity, delta);
   }
 
   // Consider gravity.
