@@ -21,6 +21,8 @@
 #define LEVEL_WIDTH 2800
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
 
+#define MAX_SPEED 666.0f
+
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
 #define ANIMATION_FRAME_COUNT_GULL 19
@@ -68,10 +70,11 @@ void DEBUG__draw_point(DEBUG *self, float x, float y, Color color) {
 }
 
 void DEBUG__draw_direction(DEBUG *self, float start_x, float start_y,
-                           float dir_x, float dir_y, Color color) {
-  float length = 66.0f;
-  Vector2 end_position =
-      (Vector2){start_x + dir_x * length, start_y + dir_y * length};
+                           float dir_x, float dir_y, float length,
+                           Color color) {
+  float scaled_length = 250.0f * (length / MAX_SPEED);
+  Vector2 end_position = (Vector2){start_x + dir_x * scaled_length,
+                                   start_y + dir_y * scaled_length};
 
   DEBUG__enqueue(self, (DEBUG_visual){.type = ARROW,
                                       .color = color,
@@ -113,10 +116,10 @@ void DEBUG__draw(DEBUG *self) {
       rec.y -= 2.5f;
       rec.width += 5.0f;
       rec.height += 5.0f;
-      DrawRectangleLinesEx(rec, 5, object.color);
+      DrawRectangleLinesEx(rec, 2, object.color);
       break;
     case ARROW:
-      float size = 6.0f;
+      float size = 2.0f;
       DrawLineEx(object.position, object.end_position, size, object.color);
       /* The arrow tip's edge on the left side of the direction line.
        *     \
@@ -193,8 +196,7 @@ PhysicsBody *PhysicsBody__new(Rectangle aabb, float mass) {
   return self;
 }
 
-/*
- * Return if and how self collides to other.
+/* Return if and how self collides to other.
  *
  * ## Kudos:
  * -
@@ -244,8 +246,7 @@ typedef struct {
   Texture2D *frames;
 } Animation;
 
-/*
- * Copy `frames` for animation.
+/* Copy `frames` for animation.
  */
 Animation *Animation__from_frames(size_t frame_count, Texture2D *frames,
                                   unsigned length_ms) {
@@ -264,8 +265,8 @@ Animation *Animation__from_frames(size_t frame_count, Texture2D *frames,
 
   return self;
 }
-/*
- * Initialize and load animation frames from a string template filepath using
+
+/* Initialize and load animation frames from a string template filepath using
  * zero-left-padded indexes [0, `frame_count`).
  *
  * NOTE: This method assumes using the `template` will yield constant length
@@ -325,7 +326,8 @@ void Animation__free(Animation *self) {
 }
 
 /* This enum works as a mask to match into the different categories of
- * EntityTypes. */
+ * EntityTypes (poor man's polymorphism).
+ */
 enum EntityCategory {
   PROP = 0x0000ff,
   UGGY = 0x00ff00,
@@ -349,12 +351,17 @@ enum EntityType {
   WINE,
 };
 
-/*
- * Represents objects/characters in the game world.
+enum EntityState {
+  NONE = 0,
+  DRAGGING,
+};
+
+/* Represents objects/characters in the game world.
  */
 typedef struct {
   enum EntityCategory category;
   enum EntityType type;
+  enum EntityState state;
   PhysicsBody *body;
   Animation *animation;
   // For PRIEST type.
@@ -457,9 +464,12 @@ void Entity__draw(Entity *self, Camera2D camera, Cursor cursor) {
   }
 }
 
+/* Because of how collisions is implemented, sometimes the "order" of collision
+ * matters for collision resolution thus actor and target are specified.
+ */
 typedef struct {
-  Entity *a;
-  Entity *b;
+  Entity *actor;
+  Entity *target;
   Collision collision;
 } CollisionPair;
 
@@ -555,8 +565,7 @@ void MorteGame__add_entity(MorteGame *self, Entity *entity) {
   }
 }
 
-/**
- * Check for and report collisions between physics bodies preventing.
+/* Check for and report collisions between physics bodies preventing.
  */
 size_t MorteGame__collisions(MorteGame *self, float delta) {
   size_t k = 0;
@@ -575,7 +584,7 @@ size_t MorteGame__collisions(MorteGame *self, float delta) {
         }
 
         self->collision_pairs[k] =
-            (CollisionPair){.a = a, .b = b, .collision = collision};
+            (CollisionPair){.actor = a, .target = b, .collision = collision};
         k++;
       }
     }
@@ -596,37 +605,91 @@ void MorteGame__collide_to_wall(Entity *e, Collision collision) {
   }
 }
 
-void MorteGame__resolve_collision(MorteGame *self, CollisionPair c) {
-  switch (c.a->type) {
-  case WALL:
-    printf("Wall hit %d\n", c.b->type);
-
-    if (c.b->type & UGGY) {
-      // Because of how collision checking is implemented, the walls (which keep
-      // objects inside the game area) need to be handled as collidees
-      // ("targets") in order to choose the correct direction in which to
-      // correct the moving bodies' ("actors") positions.
-      Collision flipped = c.collision;
-      flipped.direction = Vector2Scale(flipped.direction, -1.0f);
-      MorteGame__collide_to_wall(c.b, flipped);
-    }
-    break;
-  default:
-    // Match by categories.
-    if (c.a->type & UGGY) {
-      printf("Uggy hit %d\n", c.b->type);
-
-      switch (c.b->type) {
-      case WALL:
-        MorteGame__collide_to_wall(c.a, c.collision);
-        break;
-      }
-    }
+void MorteGame__resolve_collision_WALL(MorteGame *self, CollisionPair c) {
+  if (c.target->type & UGGY) {
+    Collision flipped = c.collision;
+    flipped.direction = Vector2Scale(flipped.direction, -1.0f);
+    MorteGame__collide_to_wall(c.target, flipped);
   }
 }
 
-/*
- * While keeping the view inside the level bounds, focus camera's center on
+void MorteGame__resolve_collision_WACKO(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_HAND(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_SNAKE(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_GULL(MorteGame *self, CollisionPair c) {
+  switch (c.target->type) {
+  case PRIEST:
+    // Pick up the priest with talons.
+    c.actor->state = DRAGGING;
+    break;
+  }
+}
+
+void MorteGame__resolve_collision_PRIEST(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_GRENADE(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_HAT(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_CANNABIS(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_SAW(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_MUSHROOM(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision_WINE(MorteGame *self, CollisionPair c) {}
+
+void MorteGame__resolve_collision(MorteGame *self, CollisionPair c) {
+  switch (c.actor->type) {
+    /////////////////////////////////////////////////////////////////////////////
+    // PROPS
+  case WALL:
+    MorteGame__resolve_collision_WALL(self, c);
+    break;
+    /////////////////////////////////////////////////////////////////////////////
+    // UGGIES
+  case WACKO:
+    MorteGame__resolve_collision_WACKO(self, c);
+    break;
+  case HAND:
+    MorteGame__resolve_collision_HAND(self, c);
+    break;
+  case SNAKE:
+    MorteGame__resolve_collision_SNAKE(self, c);
+    break;
+  case GULL:
+    MorteGame__resolve_collision_GULL(self, c);
+    break;
+  case PRIEST:
+    MorteGame__resolve_collision_PRIEST(self, c);
+    break;
+    /////////////////////////////////////////////////////////////////////////////
+    // LOOT
+  case GRENADE:
+    MorteGame__resolve_collision_GRENADE(self, c);
+    break;
+  case HAT:
+    MorteGame__resolve_collision_HAT(self, c);
+    break;
+  case CANNABIS:
+    MorteGame__resolve_collision_CANNABIS(self, c);
+    break;
+  case SAW:
+    MorteGame__resolve_collision_SAW(self, c);
+    break;
+  case MUSHROOM:
+    MorteGame__resolve_collision_MUSHROOM(self, c);
+    break;
+  case WINE:
+    MorteGame__resolve_collision_WINE(self, c);
+    break;
+  }
+}
+
+/* While keeping the view inside the level bounds, focus camera's center on
  * the `object` center.
  */
 void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
@@ -666,8 +729,8 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
         ANIMATION_LENGTH_MILLIS_GULL);
     Entity *gull = Entity__new(
         GULL,
-        PhysicsBody__new((Rectangle){self->player->body->aabb.x + 50,
-                                     self->player->body->aabb.y - 50,
+        PhysicsBody__new((Rectangle){self->player->body->aabb.x + 100,
+                                     self->player->body->aabb.y - 100,
                                      gull_animation->frames[0].width,
                                      gull_animation->frames[0].height},
                          20),
@@ -812,7 +875,14 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity) {
   case SNAKE:
     break;
   case GULL:
+    if (entity->state == DRAGGING) {
+      entity->body->impulse = (Vector2){
+          .x = entity->body->velocity.x * Clamp(frand(), 0.8f, 1.0f),
+          .y = -500.0 * Clamp(frand(), 0.8f, 1.0f),
+      };
+    }
     if (entity->body->aabb.y > 50.0f) {
+      entity->state = NONE;
       float floating = fmin(30.0f, fabs(30.0f - entity->body->velocity.x));
       float homing = Rectangle__center(self->player->body->aabb).x >
                              Rectangle__center(entity->body->aabb).x
@@ -876,7 +946,35 @@ void MorteGame__draw(MorteGame *self, float delta) {
   }
 
   for (size_t i = 0; i < self->entity_count; i++) {
-    Entity__draw(self->entities[i], self->camera, self->cursor);
+    Entity *entity = self->entities[i];
+    Entity__draw(entity, self->camera, self->cursor);
+
+    const char *state_text;
+    switch (entity->state) {
+    case NONE:
+      state_text = "None";
+      break;
+    case DRAGGING:
+      state_text = "Dragging";
+      break;
+    }
+
+    if (self->debug) {
+      DrawText(state_text, entity->body->aabb.x + entity->body->aabb.width + 10,
+               entity->body->aabb.y, 10, WHITE);
+
+      char position_text[3 + 8] = "x: -0000\0";
+
+      sprintf(position_text, "x: %d", (int)entity->body->aabb.x);
+      DrawText(position_text,
+               entity->body->aabb.x + entity->body->aabb.width + 10,
+               entity->body->aabb.y + 12, 10, WHITE);
+
+      sprintf(position_text, "y: %d", (int)entity->body->aabb.y);
+      DrawText(position_text,
+               entity->body->aabb.x + entity->body->aabb.width + 10,
+               entity->body->aabb.y + 24, 10, WHITE);
+    }
   }
 
   DrawTexture(self->backgrounds[2].texture, self->backgrounds[2].position.x,
@@ -896,6 +994,13 @@ void MorteGame__draw(MorteGame *self, float delta) {
 
   if (self->debug) {
     DrawText("DEBUG", 45, 35, 50, GREEN);
+
+    char fps_text[4] = "NaN\0";
+    int fps = 1.0f / delta;
+    if (fps < 1000) {
+      sprintf(fps_text, "%d", fps);
+    }
+    DrawText(fps_text, WINDOW_WIDTH - 100, 35, 50, GREEN);
   }
 
   if (self->is_paused) {
@@ -905,13 +1010,6 @@ void MorteGame__draw(MorteGame *self, float delta) {
     DrawText(text, WINDOW_WIDTH / 2 - text_width / 2, WINDOW_HEIGHT / 2,
              font_size, RED);
   }
-
-  char text[4] = "NaN\0";
-  int fps = 1.0f / delta;
-  if (fps < 1000) {
-    sprintf(text, "%d", fps);
-  }
-  DrawText(text, WINDOW_WIDTH - 100, 35, 50, GREEN);
 
   EndDrawing();
 }
@@ -923,8 +1021,7 @@ enum GameStatus {
   GAME_DO_DEBUG,
 };
 
-/*
- * User control updates.
+/* User control updates.
  *
  * Returns true if the game loop should continue to the end of this frame and
  * false if not.
@@ -1003,7 +1100,7 @@ void MorteGame__update(MorteGame *self, float delta) {
       if (vl > 0) {
         DEBUG__draw_direction(self->debug, body->aabb.x + body->aabb.width / 2,
                               body->aabb.y + body->aabb.height / 2,
-                              body->velocity.x / vl, body->velocity.y / vl,
+                              body->velocity.x / vl, body->velocity.y / vl, vl,
                               GREEN);
       }
     }
@@ -1015,7 +1112,20 @@ void MorteGame__update(MorteGame *self, float delta) {
   size_t collision_count = MorteGame__collisions(self, delta);
 
   for (size_t i = 0; i < collision_count; i++) {
-    MorteGame__resolve_collision(self, self->collision_pairs[i]);
+    CollisionPair original = self->collision_pairs[i];
+    MorteGame__resolve_collision(self, original);
+
+    // Because of how collision checking is implemented (< N^2), the pair needs
+    // to be re-handled "flipped" so that both entities resolve while being the
+    // actor once.
+    CollisionPair flipped = {
+        .actor = original.target,
+        .target = original.actor,
+        .collision = {
+            .depth = original.collision.depth,
+            .direction = Vector2Scale(original.collision.direction, -1.0f),
+        }};
+    MorteGame__resolve_collision(self, flipped);
   }
 
   self->cursor.position = GetScreenToWorld2D(GetMousePosition(), self->camera);
