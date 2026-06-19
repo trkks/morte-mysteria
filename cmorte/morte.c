@@ -464,14 +464,14 @@ void Entity__draw(Entity *self, Camera2D camera, Cursor cursor) {
   }
 }
 
-/* Because of how collisions is implemented, sometimes the "order" of collision
- * matters for collision resolution thus actor and target are specified.
+/* Abstraction to help me think about how an actor acts when it collides to
+ * a target instead of shuffling both entities' behavior in the same scope.
  */
 typedef struct {
   Entity *actor;
   Entity *target;
   Collision collision;
-} CollisionPair;
+} CollisionEvent;
 
 typedef struct {
   Texture2D border;
@@ -502,7 +502,7 @@ typedef struct {
   PhysicsBody **physics_bodies;
   Entity **entities;
   Animation **animations;
-  CollisionPair *collision_pairs;
+  CollisionEvent *collision_events;
 
   Background backgrounds[3];
   HUD hud;
@@ -535,7 +535,7 @@ void MorteGame__free(MorteGame *self) {
 
   UnloadTexture(self->hud.border);
 
-  free(self->collision_pairs);
+  free(self->collision_events);
 
   DEBUG__free(self->debug);
 }
@@ -551,8 +551,8 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   size_t max_collisions = (self->physics_body_count * self->physics_body_count -
                            self->physics_body_count) /
                           2;
-  self->collision_pairs =
-      realloc(self->collision_pairs, max_collisions * sizeof(CollisionPair));
+  self->collision_events =
+      realloc(self->collision_events, max_collisions * sizeof(CollisionEvent));
 }
 
 void MorteGame__add_entity(MorteGame *self, Entity *entity) {
@@ -583,8 +583,8 @@ size_t MorteGame__collisions(MorteGame *self, float delta) {
           DEBUG__draw_rectangle(self->debug, b->body->aabb, YELLOW);
         }
 
-        self->collision_pairs[k] =
-            (CollisionPair){.actor = a, .target = b, .collision = collision};
+        self->collision_events[k] =
+            (CollisionEvent){.actor = a, .target = b, .collision = collision};
         k++;
       }
     }
@@ -593,97 +593,105 @@ size_t MorteGame__collisions(MorteGame *self, float delta) {
   return k;
 }
 
-void MorteGame__resolve_collision_WALL(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_WALL(MorteGame *self, CollisionEvent event) {}
 
-void MorteGame__resolve_collision_WACKO(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_WACKO(MorteGame *self, CollisionEvent event) {
+}
 
-void MorteGame__resolve_collision_HAND(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_HAND(MorteGame *self, CollisionEvent event) {}
 
-void MorteGame__resolve_collision_SNAKE(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_SNAKE(MorteGame *self, CollisionEvent event) {
+}
 
-void MorteGame__resolve_collision_GULL(MorteGame *self, CollisionPair c) {
-  switch (c.target->type) {
+void MorteGame__resolve_collision_GULL(MorteGame *self, CollisionEvent event) {
+  switch (event.target->type) {
   case PRIEST:
     // Pick up the priest with talons.
-    c.actor->state = DRAGGING;
+    event.actor->state = DRAGGING;
     break;
   }
 }
 
-void MorteGame__resolve_collision_PRIEST(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_PRIEST(MorteGame *self,
+                                         CollisionEvent event) {}
 
-void MorteGame__resolve_collision_GRENADE(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_GRENADE(MorteGame *self,
+                                          CollisionEvent event) {}
 
-void MorteGame__resolve_collision_HAT(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_HAT(MorteGame *self, CollisionEvent event) {}
 
-void MorteGame__resolve_collision_CANNABIS(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_CANNABIS(MorteGame *self,
+                                           CollisionEvent event) {}
 
-void MorteGame__resolve_collision_SAW(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_SAW(MorteGame *self, CollisionEvent event) {}
 
-void MorteGame__resolve_collision_MUSHROOM(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_MUSHROOM(MorteGame *self,
+                                           CollisionEvent event) {}
 
-void MorteGame__resolve_collision_WINE(MorteGame *self, CollisionPair c) {}
+void MorteGame__resolve_collision_WINE(MorteGame *self, CollisionEvent event) {}
 
 /* Select the matching method to handle collision for the c.actor. */
-void MorteGame__resolve_collision(MorteGame *self, CollisionPair c) {
-  if (c.actor->type & UGGY) {
-    switch (c.target->type) {
+void MorteGame__resolve_collision(MorteGame *self, CollisionEvent event) {
+  if (event.actor->type & UGGY) {
+    switch (event.target->type) {
     case WALL:
       // Separate the collider from the wall.
-      c.actor->body->aabb.x -= c.collision.direction.x * c.collision.depth;
-      c.actor->body->aabb.y -= c.collision.direction.y * c.collision.depth;
+      event.actor->body->aabb.x -=
+          event.collision.direction.x * event.collision.depth;
+      event.actor->body->aabb.y -=
+          event.collision.direction.y * event.collision.depth;
 
       // Stop when dropping onto a platform.
-      if (float__eq(c.collision.direction.y, DOWN.y)) {
-        c.actor->body->velocity.y = 0;
-        c.actor->body->impulse.y = 0;
+      if (float__eq(event.collision.direction.y, DOWN.y)) {
+        event.actor->body->velocity.y = 0;
+        event.actor->body->impulse.y = 0;
       }
       break;
     }
   }
 
-  switch (c.actor->type) {
+  switch (event.actor->type) {
     /////////////////////////////////////////////////////////////////////////////
     // PROPS
   case WALL:
-    MorteGame__resolve_collision_WALL(self, c);
+    MorteGame__resolve_collision_WALL(self, event);
     break;
     /////////////////////////////////////////////////////////////////////////////
     // UGGIES
   case WACKO:
-    MorteGame__resolve_collision_WACKO(self, c);
+    MorteGame__resolve_collision_WACKO(self, event);
     break;
   case HAND:
-    MorteGame__resolve_collision_HAND(self, c);
+    MorteGame__resolve_collision_HAND(self, event);
     break;
   case SNAKE:
-    MorteGame__resolve_collision_SNAKE(self, c);
+    MorteGame__resolve_collision_SNAKE(self, event);
     break;
   case GULL:
-    MorteGame__resolve_collision_GULL(self, c);
+    MorteGame__resolve_collision_GULL(self, event);
     break;
   case PRIEST:
-    MorteGame__resolve_collision_PRIEST(self, c);
+    MorteGame__resolve_collision_PRIEST(self, event);
     break;
     /////////////////////////////////////////////////////////////////////////////
     // LOOT
   case GRENADE:
-    MorteGame__resolve_collision_GRENADE(self, c);
+    MorteGame__resolve_collision_GRENADE(self, event);
     break;
   case HAT:
-    MorteGame__resolve_collision_HAT(self, c);
+    MorteGame__resolve_collision_HAT(self, event);
     break;
   case CANNABIS:
-    MorteGame__resolve_collision_CANNABIS(self, c);
+    MorteGame__resolve_collision_CANNABIS(self, event);
     break;
   case SAW:
-    MorteGame__resolve_collision_SAW(self, c);
+    MorteGame__resolve_collision_SAW(self, event);
     break;
   case MUSHROOM:
-    MorteGame__resolve_collision_MUSHROOM(self, c);
+    MorteGame__resolve_collision_MUSHROOM(self, event);
     break;
   case WINE:
-    MorteGame__resolve_collision_WINE(self, c);
+    MorteGame__resolve_collision_WINE(self, event);
     break;
   }
 }
@@ -778,7 +786,7 @@ MorteGame MorteGame__initialize() {
       .physics_bodies = NULL,
       .entities = NULL,
       .animations = NULL,
-      .collision_pairs = NULL,
+      .collision_events = NULL,
       .debug = NULL,
   };
 
@@ -1111,13 +1119,13 @@ void MorteGame__update(MorteGame *self, float delta) {
   size_t collision_count = MorteGame__collisions(self, delta);
 
   for (size_t i = 0; i < collision_count; i++) {
-    CollisionPair original = self->collision_pairs[i];
+    CollisionEvent original = self->collision_events[i];
     MorteGame__resolve_collision(self, original);
 
     // Because of how collision checking is implemented (< N^2), the pair needs
     // to be re-handled "flipped" so that both entities resolve while being the
     // actor once.
-    CollisionPair flipped = {
+    CollisionEvent flipped = {
         .actor = original.target,
         .target = original.actor,
         .collision = {
