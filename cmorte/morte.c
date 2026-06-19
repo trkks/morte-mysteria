@@ -23,6 +23,8 @@
 
 #define MAX_SPEED 666.0f
 
+#define ENTITY_INVINCIBILITY_TIME_SECONDS 0.5
+
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
 #define ANIMATION_FRAME_COUNT_GULL 19
@@ -170,6 +172,11 @@ Vector2 Rectangle__center(Rectangle self) {
 }
 
 typedef struct {
+  float delta;
+  double elapsed;
+} Time;
+
+typedef struct {
   Rectangle aabb;
   float mass;
   float inverse_mass;
@@ -243,6 +250,7 @@ typedef struct {
   unsigned length_ms;
   unsigned elapsed_ms;
   enum AnimationTiming timing;
+  Color color;
   Texture2D *frames;
 } Animation;
 
@@ -258,6 +266,7 @@ Animation *Animation__from_frames(size_t frame_count, Texture2D *frames,
   self->length_ms = length_ms;
   self->elapsed_ms = 0;
   self->timing = LINEAR;
+  self->color = WHITE;
 
   for (size_t i = 0; i < self->frame_count; i++) {
     self->frames[i] = frames[i];
@@ -287,12 +296,12 @@ Animation *Animation__from_path_template(const char *template,
   return Animation__from_frames(frame_count, frames, length_ms);
 }
 
-void Animation__update(Animation *self, float delta) {
+void Animation__update(Animation *self, Time time) {
   if (self->state == STOPPED) {
     return;
   }
 
-  self->elapsed_ms += 1000 * delta;
+  self->elapsed_ms += 1000 * time.delta;
   float t = fmin(1.0f, (float)self->elapsed_ms / (float)self->length_ms);
 
   switch (self->timing) {
@@ -358,14 +367,22 @@ enum EntityState {
 
 /* Represents objects/characters in the game world.
  */
-typedef struct {
+typedef struct Entity {
   enum EntityCategory category;
   enum EntityType type;
   enum EntityState state;
   PhysicsBody *body;
   Animation *animation;
+  // For UGGY category.
+  int health;
+  // For UGGY category.
+  double hurt_time;
   // For PRIEST type.
   Texture2D eye_texture;
+  // For GULL type.
+  struct Entity *drag_target;
+  // For GULL type.
+  double drop_time;
 } Entity;
 
 Entity *Entity__new(enum EntityType type, PhysicsBody *body,
@@ -381,8 +398,13 @@ Entity *Entity__new(enum EntityType type, PhysicsBody *body,
     self->category = LOOT;
   }
   self->type = type;
+  self->state = NONE;
   self->body = body;
   self->animation = animation;
+  self->health = 0;
+  self->hurt_time = 0.0;
+  self->drag_target = NULL;
+  self->drop_time = 0.0;
   return self;
 }
 
@@ -443,7 +465,7 @@ void Entity__draw_priest_eye(Entity *self, Camera2D camera, Cursor cursor,
 void Entity__draw(Entity *self, Camera2D camera, Cursor cursor) {
   if (self->animation) {
     DrawTexture(self->animation->frames[self->animation->current_frame],
-                self->body->aabb.x, self->body->aabb.y, WHITE);
+                self->body->aabb.x, self->body->aabb.y, self->animation->color);
   }
 
   switch (self->type) {
@@ -471,6 +493,8 @@ typedef struct {
   Entity *actor;
   Entity *target;
   Collision collision;
+  // Elapsed game time in seconds at the time of the event.
+  double time_stamp;
 } CollisionEvent;
 
 typedef struct {
@@ -567,7 +591,7 @@ void MorteGame__add_entity(MorteGame *self, Entity *entity) {
 
 /* Check for and report collisions between physics bodies preventing.
  */
-size_t MorteGame__collisions(MorteGame *self, float delta) {
+size_t MorteGame__collisions(MorteGame *self, Time time) {
   size_t k = 0;
 
   for (size_t i = 0; i < self->entity_count; i++) {
@@ -584,7 +608,10 @@ size_t MorteGame__collisions(MorteGame *self, float delta) {
         }
 
         self->collision_events[k] =
-            (CollisionEvent){.actor = a, .target = b, .collision = collision};
+            (CollisionEvent){.actor = a,
+                             .target = b,
+                             .collision = collision,
+                             .time_stamp = time.elapsed};
         k++;
       }
     }
@@ -606,14 +633,31 @@ void MorteGame__resolve_collision_SNAKE(MorteGame *self, CollisionEvent event) {
 void MorteGame__resolve_collision_GULL(MorteGame *self, CollisionEvent event) {
   switch (event.target->type) {
   case PRIEST:
-    // Pick up the priest with talons.
-    event.actor->state = DRAGGING;
+    // TODO: Implement a COLLISION_EXIT event instead of waiting for 2 seconds
+    // after (GULL) dropping like here.
+    if (event.actor->state == NONE &&
+        (event.time_stamp - event.actor->drop_time) > 2.0) {
+      // Pick up the priest with talons.
+      event.actor->state = DRAGGING;
+      event.actor->drag_target = event.target;
+    }
     break;
   }
 }
 
 void MorteGame__resolve_collision_PRIEST(MorteGame *self,
-                                         CollisionEvent event) {}
+                                         CollisionEvent event) {
+  switch (event.target->type) {
+  case GULL:
+    if (event.actor->hurt_time + ENTITY_INVINCIBILITY_TIME_SECONDS <
+            event.time_stamp &&
+        event.target->state == DRAGGING) {
+      event.actor->health -= 2;
+      event.actor->hurt_time = event.time_stamp;
+    }
+    break;
+  }
+}
 
 void MorteGame__resolve_collision_GRENADE(MorteGame *self,
                                           CollisionEvent event) {}
@@ -871,7 +915,7 @@ MorteGame MorteGame__reset(MorteGame *self, DEBUG *debug_instance) {
   }
 }
 
-void MorteGame__behave_entity(MorteGame *self, Entity *entity) {
+void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
   switch (entity->type) {
   case WALL:
     break;
@@ -883,13 +927,32 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity) {
     break;
   case GULL:
     if (entity->state == DRAGGING) {
-      entity->body->impulse = (Vector2){
-          .x = entity->body->velocity.x * Clamp(frand(), 0.8f, 1.0f),
-          .y = -500.0 * Clamp(frand(), 0.8f, 1.0f),
-      };
+      if (entity->body->aabb.y < 30.0f) {
+        entity->state = NONE;
+        // Drop the target to ground.
+        entity->drag_target->body->velocity =
+            Vector2Scale(entity->body->velocity, 0.5f);
+        entity->drag_target = NULL;
+        entity->drop_time = time.elapsed;
+      } else {
+        // Keep pulling the target higher into the sky.
+        entity->body->impulse = (Vector2){
+            .x = entity->body->velocity.x * Clamp(frand(), 0.8f, 1.0f),
+            .y = -500.0 * Clamp(frand(), 0.8f, 1.0f),
+        };
+
+        // Position the drag target with the grabbing talons.
+        Vector2 actor_center = Rectangle__center(entity->body->aabb);
+        entity->drag_target->body->aabb.x =
+            actor_center.x - entity->drag_target->body->aabb.width / 2.1f;
+        entity->drag_target->body->aabb.y =
+            actor_center.y + entity->body->aabb.y / 4.0f;
+
+        // Prevent accumulating gravity on drag target while airborne.
+        entity->drag_target->body->velocity = (Vector2){0};
+      }
     }
-    if (entity->body->aabb.y > 50.0f) {
-      entity->state = NONE;
+    if (entity->body->aabb.y > 30.0f) {
       float floating = fmin(30.0f, fabs(30.0f - entity->body->velocity.x));
       float homing = Rectangle__center(self->player->body->aabb).x >
                              Rectangle__center(entity->body->aabb).x
@@ -902,8 +965,6 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity) {
     }
     break;
   case PRIEST:
-    // Player character input handling.
-
     // Movement control.
     Vector2 horizontal = (Vector2){0};
     // Horizontal.
@@ -930,6 +991,12 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity) {
     // up.
     entity->body->velocity.x = horizontal.x;
 
+    if (time.elapsed < entity->hurt_time + ENTITY_INVINCIBILITY_TIME_SECONDS) {
+      double hurt_t = (time.elapsed - entity->hurt_time) /
+                      ENTITY_INVINCIBILITY_TIME_SECONDS;
+      entity->animation->color = ColorLerp(RED, WHITE, hurt_t);
+    }
+
     break;
   }
 
@@ -940,7 +1007,7 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity) {
   }
 }
 
-void MorteGame__draw(MorteGame *self, float delta) {
+void MorteGame__draw(MorteGame *self, Time time) {
   BeginDrawing();
 
   ClearBackground(BACKGROUND_COLOR);
@@ -956,31 +1023,34 @@ void MorteGame__draw(MorteGame *self, float delta) {
     Entity *entity = self->entities[i];
     Entity__draw(entity, self->camera, self->cursor);
 
-    const char *state_text;
-    switch (entity->state) {
-    case NONE:
-      state_text = "None";
-      break;
-    case DRAGGING:
-      state_text = "Dragging";
-      break;
-    }
-
     if (self->debug) {
+      const char *state_text;
+      switch (entity->state) {
+      case NONE:
+        state_text = "None";
+        break;
+      case DRAGGING:
+        state_text = "Dragging";
+        break;
+      }
       DrawText(state_text, entity->body->aabb.x + entity->body->aabb.width + 10,
                entity->body->aabb.y, 10, WHITE);
 
-      char position_text[3 + 8] = "x: -0000\0";
+      char health_text[0 + 8] = "-0000\0";
+      sprintf(health_text, "%d", (int)entity->health);
+      DrawText(health_text,
+               entity->body->aabb.x + entity->body->aabb.width + 10,
+               entity->body->aabb.y + 12, 10, GREEN);
 
+      char position_text[3 + 8] = "x: -0000\0";
       sprintf(position_text, "x: %d", (int)entity->body->aabb.x);
       DrawText(position_text,
                entity->body->aabb.x + entity->body->aabb.width + 10,
-               entity->body->aabb.y + 12, 10, WHITE);
-
+               entity->body->aabb.y + 24, 10, WHITE);
       sprintf(position_text, "y: %d", (int)entity->body->aabb.y);
       DrawText(position_text,
                entity->body->aabb.x + entity->body->aabb.width + 10,
-               entity->body->aabb.y + 24, 10, WHITE);
+               entity->body->aabb.y + 36, 10, WHITE);
     }
   }
 
@@ -1003,7 +1073,7 @@ void MorteGame__draw(MorteGame *self, float delta) {
     DrawText("DEBUG", 45, 35, 50, GREEN);
 
     char fps_text[4] = "NaN\0";
-    int fps = 1.0f / delta;
+    int fps = 1.0f / time.delta;
     if (fps < 1000) {
       sprintf(fps_text, "%d", fps);
     }
@@ -1079,9 +1149,9 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
 }
 
 /* Perform game logic updates. */
-void MorteGame__update(MorteGame *self, float delta) {
+void MorteGame__update(MorteGame *self, Time time) {
   for (size_t i = 0; i < self->entity_count; i++) {
-    MorteGame__behave_entity(self, self->entities[i]);
+    MorteGame__behave_entity(self, self->entities[i], time);
   }
 
   // Integrate movement.
@@ -1089,10 +1159,10 @@ void MorteGame__update(MorteGame *self, float delta) {
     PhysicsBody *body = self->physics_bodies[i];
 
     // Semi-implicit Euler integration (velocity _before_ position).
-    body->velocity.x += body->impulse.x * delta;
-    body->velocity.y += body->impulse.y * delta;
-    body->aabb.x += body->velocity.x * delta;
-    body->aabb.y += body->velocity.y * delta;
+    body->velocity.x += body->impulse.x * time.delta;
+    body->velocity.y += body->impulse.y * time.delta;
+    body->aabb.x += body->velocity.x * time.delta;
+    body->aabb.y += body->velocity.y * time.delta;
 
     if (self->debug) {
       // Debug the physics body movement result.
@@ -1116,22 +1186,24 @@ void MorteGame__update(MorteGame *self, float delta) {
   // Check and resolve collisions in bulk to avoid movement between collisions
   // (i.e., in the same frame X collides with Y and immediately moves out of
   // the way, but then Z does not detect collision with the now moved X).
-  size_t collision_count = MorteGame__collisions(self, delta);
+  size_t collision_count = MorteGame__collisions(self, time);
 
   for (size_t i = 0; i < collision_count; i++) {
     CollisionEvent original = self->collision_events[i];
     MorteGame__resolve_collision(self, original);
 
-    // Because of how collision checking is implemented (< N^2), the pair needs
-    // to be re-handled "flipped" so that both entities resolve while being the
-    // actor once.
+    // Because of how collision checking is implemented (< N^2), the pair
+    // needs to be re-handled "flipped" so that both entities resolve while
+    // being the actor once.
     CollisionEvent flipped = {
         .actor = original.target,
         .target = original.actor,
-        .collision = {
-            .depth = original.collision.depth,
-            .direction = Vector2Scale(original.collision.direction, -1.0f),
-        }};
+        .collision =
+            {
+                .depth = original.collision.depth,
+                .direction = Vector2Scale(original.collision.direction, -1.0f),
+            },
+        .time_stamp = original.time_stamp};
     MorteGame__resolve_collision(self, flipped);
   }
 
@@ -1159,7 +1231,7 @@ void MorteGame__update(MorteGame *self, float delta) {
   }
 
   for (int i = 0; i < self->animation_count; i++) {
-    Animation__update(self->animations[i], delta);
+    Animation__update(self->animations[i], time);
   }
 }
 
@@ -1180,7 +1252,7 @@ int main(void) {
   MorteGame game = MorteGame__reset(NULL, &debug_instance);
 
   while (!WindowShouldClose()) {
-    float delta = GetFrameTime();
+    Time time = {.delta = GetFrameTime(), .elapsed = GetTime()};
 
     switch (MorteGame__process_meta_input(&game, &debug_instance)) {
     case GAME_DO_DEBUG:
@@ -1197,12 +1269,12 @@ int main(void) {
         game.debug->draw_queue_length = 0;
       }
 
-      MorteGame__update(&game, delta);
+      MorteGame__update(&game, time);
       // Fall to draw.
 
     case GAME_DO_PAUSE:
       // Skip game logic updates.
-      MorteGame__draw(&game, delta);
+      MorteGame__draw(&game, time);
       if (game.debug && game.debug->pause_game_after_this_frame) {
         game.is_paused = true;
       }
