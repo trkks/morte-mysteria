@@ -593,25 +593,7 @@ size_t MorteGame__collisions(MorteGame *self, float delta) {
   return k;
 }
 
-void MorteGame__collide_to_wall(Entity *e, Collision collision) {
-  // Separate the collider from the wall.
-  e->body->aabb.x -= collision.direction.x * collision.depth;
-  e->body->aabb.y -= collision.direction.y * collision.depth;
-
-  // Stop when dropping onto a platform.
-  if (float__eq(collision.direction.y, DOWN.y)) {
-    e->body->velocity.y = 0;
-    e->body->impulse.y = 0;
-  }
-}
-
-void MorteGame__resolve_collision_WALL(MorteGame *self, CollisionPair c) {
-  if (c.target->type & UGGY) {
-    Collision flipped = c.collision;
-    flipped.direction = Vector2Scale(flipped.direction, -1.0f);
-    MorteGame__collide_to_wall(c.target, flipped);
-  }
-}
+void MorteGame__resolve_collision_WALL(MorteGame *self, CollisionPair c) {}
 
 void MorteGame__resolve_collision_WACKO(MorteGame *self, CollisionPair c) {}
 
@@ -642,7 +624,24 @@ void MorteGame__resolve_collision_MUSHROOM(MorteGame *self, CollisionPair c) {}
 
 void MorteGame__resolve_collision_WINE(MorteGame *self, CollisionPair c) {}
 
+/* Select the matching method to handle collision for the c.actor. */
 void MorteGame__resolve_collision(MorteGame *self, CollisionPair c) {
+  if (c.actor->type & UGGY) {
+    switch (c.target->type) {
+    case WALL:
+      // Separate the collider from the wall.
+      c.actor->body->aabb.x -= c.collision.direction.x * c.collision.depth;
+      c.actor->body->aabb.y -= c.collision.direction.y * c.collision.depth;
+
+      // Stop when dropping onto a platform.
+      if (float__eq(c.collision.direction.y, DOWN.y)) {
+        c.actor->body->velocity.y = 0;
+        c.actor->body->impulse.y = 0;
+      }
+      break;
+    }
+  }
+
   switch (c.actor->type) {
     /////////////////////////////////////////////////////////////////////////////
     // PROPS
