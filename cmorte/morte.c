@@ -381,8 +381,6 @@ typedef struct Entity {
   Texture2D eye_texture;
   // For GULL type.
   struct Entity *drag_target;
-  // For GULL type.
-  double drop_time;
 } Entity;
 
 Entity *Entity__new(enum EntityType type, PhysicsBody *body,
@@ -404,7 +402,6 @@ Entity *Entity__new(enum EntityType type, PhysicsBody *body,
   self->health = 0;
   self->hurt_time = 0.0;
   self->drag_target = NULL;
-  self->drop_time = 0.0;
   return self;
 }
 
@@ -486,6 +483,12 @@ void Entity__draw(Entity *self, Camera2D camera, Cursor cursor) {
   }
 }
 
+enum EventType {
+  COLLISION_ENTER,
+  COLLIDING,
+  COLLISION_EXIT,
+};
+
 /* Abstraction to help me think about how an actor acts when it collides to
  * a target instead of shuffling both entities' behavior in the same scope.
  */
@@ -493,6 +496,7 @@ typedef struct {
   Entity *actor;
   Entity *target;
   Collision collision;
+  enum EventType type;
   // Elapsed game time in seconds at the time of the event.
   double time_stamp;
 } CollisionEvent;
@@ -526,6 +530,7 @@ typedef struct {
   PhysicsBody **physics_bodies;
   Entity **entities;
   Animation **animations;
+  size_t collision_event_count;
   CollisionEvent *collision_events;
 
   Background backgrounds[3];
@@ -575,6 +580,7 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   size_t max_collisions = (self->physics_body_count * self->physics_body_count -
                            self->physics_body_count) /
                           2;
+
   self->collision_events =
       realloc(self->collision_events, max_collisions * sizeof(CollisionEvent));
 }
@@ -591,9 +597,30 @@ void MorteGame__add_entity(MorteGame *self, Entity *entity) {
 
 /* Check for and report collisions between physics bodies preventing.
  */
-size_t MorteGame__collisions(MorteGame *self, Time time) {
+void MorteGame__collisions(MorteGame *self, Time time) {
+  // First update previous collision events if they _exit_.
   size_t k = 0;
 
+  for (size_t i = 0; i < self->collision_event_count; i++) {
+    CollisionEvent previous_event = self->collision_events[i];
+
+    Collision current_collision = PhysicsBody__colliding(
+        previous_event.actor->body, previous_event.target->body);
+
+    if (!current_collision.happened && previous_event.type != COLLISION_EXIT) {
+      // Update the event.
+      previous_event.type = COLLISION_EXIT;
+      previous_event.collision = current_collision;
+      // Add to this update's collisions.
+      self->collision_events[k] = previous_event;
+      k++;
+    }
+  }
+
+  // Start collecting new collisions from the end of re-handled events.
+  self->collision_event_count = k;
+
+  // Add brand new collisions to the end.
   for (size_t i = 0; i < self->entity_count; i++) {
     Entity *a = self->entities[i];
 
@@ -607,17 +634,16 @@ size_t MorteGame__collisions(MorteGame *self, Time time) {
           DEBUG__draw_rectangle(self->debug, b->body->aabb, YELLOW);
         }
 
-        self->collision_events[k] =
+        self->collision_events[self->collision_event_count] =
             (CollisionEvent){.actor = a,
                              .target = b,
+                             .type = COLLISION_ENTER,
                              .collision = collision,
                              .time_stamp = time.elapsed};
-        k++;
+        self->collision_event_count++;
       }
     }
   }
-
-  return k;
 }
 
 void MorteGame__resolve_collision_WALL(MorteGame *self, CollisionEvent event) {}
@@ -633,10 +659,7 @@ void MorteGame__resolve_collision_SNAKE(MorteGame *self, CollisionEvent event) {
 void MorteGame__resolve_collision_GULL(MorteGame *self, CollisionEvent event) {
   switch (event.target->type) {
   case PRIEST:
-    // TODO: Implement a COLLISION_EXIT event instead of waiting for 2 seconds
-    // after (GULL) dropping like here.
-    if (event.actor->state == NONE &&
-        (event.time_stamp - event.actor->drop_time) > 2.0) {
+    if (event.actor->state == NONE && event.type == COLLISION_ENTER) {
       // Pick up the priest with talons.
       event.actor->state = DRAGGING;
       event.actor->drag_target = event.target;
@@ -676,7 +699,7 @@ void MorteGame__resolve_collision_WINE(MorteGame *self, CollisionEvent event) {}
 
 /* Select the matching method to handle collision for the c.actor. */
 void MorteGame__resolve_collision(MorteGame *self, CollisionEvent event) {
-  if (event.actor->type & UGGY) {
+  if (event.actor->category == UGGY) {
     switch (event.target->type) {
     case WALL:
       // Separate the collider from the wall.
@@ -830,6 +853,7 @@ MorteGame MorteGame__initialize() {
       .physics_bodies = NULL,
       .entities = NULL,
       .animations = NULL,
+      .collision_event_count = 0,
       .collision_events = NULL,
       .debug = NULL,
   };
@@ -928,12 +952,11 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
   case GULL:
     if (entity->state == DRAGGING) {
       if (entity->body->aabb.y < 30.0f) {
-        entity->state = NONE;
         // Drop the target to ground.
+        entity->state = NONE;
         entity->drag_target->body->velocity =
             Vector2Scale(entity->body->velocity, 0.5f);
         entity->drag_target = NULL;
-        entity->drop_time = time.elapsed;
       } else {
         // Keep pulling the target higher into the sky.
         entity->body->impulse = (Vector2){
@@ -1186,9 +1209,9 @@ void MorteGame__update(MorteGame *self, Time time) {
   // Check and resolve collisions in bulk to avoid movement between collisions
   // (i.e., in the same frame X collides with Y and immediately moves out of
   // the way, but then Z does not detect collision with the now moved X).
-  size_t collision_count = MorteGame__collisions(self, time);
+  MorteGame__collisions(self, time);
 
-  for (size_t i = 0; i < collision_count; i++) {
+  for (size_t i = 0; i < self->collision_event_count; i++) {
     CollisionEvent original = self->collision_events[i];
     MorteGame__resolve_collision(self, original);
 
