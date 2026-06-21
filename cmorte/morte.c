@@ -484,6 +484,7 @@ void Entity__draw(Entity *self, Camera2D camera, Cursor cursor) {
 }
 
 enum EventType {
+  NOT_COLLIDING,
   COLLISION_ENTER,
   COLLIDING,
   COLLISION_EXIT,
@@ -493,6 +494,8 @@ enum EventType {
  * a target instead of shuffling both entities' behavior in the same scope.
  */
 typedef struct {
+  size_t actor_handle;
+  size_t target_handle;
   Entity *actor;
   Entity *target;
   Collision collision;
@@ -577,9 +580,10 @@ void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
   APPEND(self->physics_bodies, self->physics_body_count, PhysicsBody *, body);
 
   // Amount of possible collisions is increased by addition of a new body.
-  size_t max_collisions = (self->physics_body_count * self->physics_body_count -
-                           self->physics_body_count) /
-                          2;
+  size_t max_collisions =
+      ((self->physics_body_count * self->physics_body_count) // Full matrix.
+       - self->physics_body_count) // Not colliding with self (diagonal).
+      / 2;                         // Process same pair only once.
 
   self->collision_events =
       realloc(self->collision_events, max_collisions * sizeof(CollisionEvent));
@@ -598,29 +602,19 @@ void MorteGame__add_entity(MorteGame *self, Entity *entity) {
 /* Check for and report collisions between physics bodies preventing.
  */
 void MorteGame__collisions(MorteGame *self, Time time) {
-  // First update previous collision events if they _exit_.
-  size_t k = 0;
-
-  for (size_t i = 0; i < self->collision_event_count; i++) {
-    CollisionEvent previous_event = self->collision_events[i];
-
-    Collision current_collision = PhysicsBody__colliding(
-        previous_event.actor->body, previous_event.target->body);
-
-    if (!current_collision.happened && previous_event.type != COLLISION_EXIT) {
-      // Update the event.
-      previous_event.type = COLLISION_EXIT;
-      previous_event.collision = current_collision;
-      // Add to this update's collisions.
-      self->collision_events[k] = previous_event;
-      k++;
-    }
+  // NOTE: Not initializing this seems to make Valgrind generate warning about
+  // accesssing uninitialized value. This is fine, because the accessed index is
+  // initialized with previous event value in the first for-loop.
+  CollisionEvent matrix[self->entity_count * self->entity_count];
+  // Place previous events to their assigned positions.
+  for (size_t i = 0; i < self->collision_event_count; ++i) {
+    CollisionEvent event = self->collision_events[i];
+    matrix[event.actor_handle * self->physics_body_count +
+           event.target_handle] = event;
   }
 
-  // Start collecting new collisions from the end of re-handled events.
-  self->collision_event_count = k;
-
-  // Add brand new collisions to the end.
+  // Start collecting the collisions for this update.
+  self->collision_event_count = 0;
   for (size_t i = 0; i < self->entity_count; i++) {
     Entity *a = self->entities[i];
 
@@ -628,19 +622,40 @@ void MorteGame__collisions(MorteGame *self, Time time) {
       Entity *b = self->entities[j];
 
       Collision collision = PhysicsBody__colliding(a->body, b->body);
-      if (collision.happened) {
-        if (self->debug) {
-          DEBUG__draw_rectangle(self->debug, a->body->aabb, YELLOW);
-          DEBUG__draw_rectangle(self->debug, b->body->aabb, YELLOW);
-        }
 
-        self->collision_events[self->collision_event_count] =
-            (CollisionEvent){.actor = a,
-                             .target = b,
-                             .type = COLLISION_ENTER,
-                             .collision = collision,
-                             .time_stamp = time.elapsed};
-        self->collision_event_count++;
+      // NOTE: Not initializing .type field here.
+      CollisionEvent event = (CollisionEvent){.actor_handle = i,
+                                              .target_handle = j,
+                                              .actor = a,
+                                              .target = b,
+                                              .collision = collision,
+                                              .time_stamp = time.elapsed};
+
+      // Fill in the .type of the event.
+      CollisionEvent previous_event = matrix[i * self->physics_body_count + j];
+      if (collision.happened) {
+        if (previous_event.type == COLLIDING ||
+            previous_event.type == COLLISION_ENTER) {
+          event.type = COLLIDING;
+        } else {
+          event.type = COLLISION_ENTER;
+        }
+      } else if (previous_event.type == COLLIDING ||
+                 previous_event.type == COLLISION_ENTER) {
+        event.type = COLLISION_EXIT;
+      } else {
+        event.type = NOT_COLLIDING;
+      }
+
+      // Append the new event to the list.
+      self->collision_events[self->collision_event_count] = event;
+      self->collision_event_count++;
+
+      if (self->debug) {
+        if (collision.happened) {
+          DEBUG__draw_rectangle(self->debug, a->body->aabb, YELLOW);
+          DEBUG__draw_rectangle(self->debug, b->body->aabb, SKYBLUE);
+        }
       }
     }
   }
@@ -699,6 +714,10 @@ void MorteGame__resolve_collision_WINE(MorteGame *self, CollisionEvent event) {}
 
 /* Select the matching method to handle collision for the c.actor. */
 void MorteGame__resolve_collision(MorteGame *self, CollisionEvent event) {
+  if (event.type == NOT_COLLIDING) {
+    return;
+  }
+
   if (event.actor->category == UGGY) {
     switch (event.target->type) {
     case WALL:
@@ -1215,18 +1234,14 @@ void MorteGame__update(MorteGame *self, Time time) {
     CollisionEvent original = self->collision_events[i];
     MorteGame__resolve_collision(self, original);
 
-    // Because of how collision checking is implemented (< N^2), the pair
-    // needs to be re-handled "flipped" so that both entities resolve while
+    // Because of how collision checking is implemented ((N^2 - N) / 2), the
+    // pair needs to be re-handled "flipped" so that both entities resolve while
     // being the actor once.
-    CollisionEvent flipped = {
-        .actor = original.target,
-        .target = original.actor,
-        .collision =
-            {
-                .depth = original.collision.depth,
-                .direction = Vector2Scale(original.collision.direction, -1.0f),
-            },
-        .time_stamp = original.time_stamp};
+    CollisionEvent flipped = original; // Copy fields for editing.
+    flipped.actor = original.target;
+    flipped.target = original.actor;
+    flipped.collision.direction =
+        Vector2Scale(original.collision.direction, -1.0f);
     MorteGame__resolve_collision(self, flipped);
   }
 
