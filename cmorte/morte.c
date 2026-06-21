@@ -363,6 +363,7 @@ enum EntityType {
 enum EntityState {
   NONE = 0,
   DRAGGING,
+  DRAGGED,
 };
 
 /* Represents objects/characters in the game world.
@@ -674,28 +675,26 @@ void MorteGame__resolve_collision_SNAKE(MorteGame *self, CollisionEvent event) {
 void MorteGame__resolve_collision_GULL(MorteGame *self, CollisionEvent event) {
   switch (event.target->type) {
   case PRIEST:
-    if (event.actor->state == NONE && event.type == COLLISION_ENTER) {
-      // Pick up the priest with talons.
-      event.actor->state = DRAGGING;
-      event.actor->drag_target = event.target;
+    switch (event.type) {
+    case COLLISION_ENTER:
+      if (event.actor->state == NONE && event.target->state == NONE) {
+        // Pick up the priest with talons.
+        event.actor->state = DRAGGING;
+        event.target->state = DRAGGED;
+        event.actor->drag_target = event.target;
+      }
+      break;
+    case COLLISION_EXIT:
+      // Set Priest finally free.
+      event.target->state = NONE;
+      break;
     }
     break;
   }
 }
 
 void MorteGame__resolve_collision_PRIEST(MorteGame *self,
-                                         CollisionEvent event) {
-  switch (event.target->type) {
-  case GULL:
-    if (event.actor->hurt_time + ENTITY_INVINCIBILITY_TIME_SECONDS <
-            event.time_stamp &&
-        event.target->state == DRAGGING) {
-      event.actor->health -= 2;
-      event.actor->hurt_time = event.time_stamp;
-    }
-    break;
-  }
-}
+                                         CollisionEvent event) {}
 
 void MorteGame__resolve_collision_GRENADE(MorteGame *self,
                                           CollisionEvent event) {}
@@ -1039,6 +1038,16 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
       entity->animation->color = ColorLerp(RED, WHITE, hurt_t);
     }
 
+    switch (entity->state) {
+    case DRAGGED:
+      if (entity->hurt_time + ENTITY_INVINCIBILITY_TIME_SECONDS <
+          time.elapsed) {
+        entity->health -= 2;
+        entity->hurt_time = time.elapsed;
+      }
+      break;
+    }
+
     break;
   }
 
@@ -1073,6 +1082,12 @@ void MorteGame__draw(MorteGame *self, Time time) {
         break;
       case DRAGGING:
         state_text = "Dragging";
+        break;
+      case DRAGGED:
+        state_text = "Dragged";
+        break;
+      default:
+        state_text = "UNDEFINED";
         break;
       }
       DrawText(state_text, entity->body->aabb.x + entity->body->aabb.width + 10,
