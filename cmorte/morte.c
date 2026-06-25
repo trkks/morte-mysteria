@@ -17,6 +17,7 @@
 /* View[port] height is used to scale the visual size */
 #define WINDOW_HEIGHT 800
 #define WINDOW_WIDTH (WINDOW_HEIGHT * ASPECT_RATIO)
+#define WINDOW_SCALE (WINDOW_HEIGHT / LEVEL_HEIGHT)
 #define LEVEL_HEIGHT 400
 #define LEVEL_WIDTH 2800
 #define BACKGROUND_COLOR (Color){133, 31, 10, 255}
@@ -24,6 +25,9 @@
 #define MAX_SPEED 666.0f
 
 #define ENTITY_INVINCIBILITY_TIME_SECONDS 0.5
+
+#define PLAYER_MAX_HEALTH 100
+#define GULL_ATTACK_DAMAGE 10
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
@@ -161,7 +165,9 @@ float frand() { return (float)rand() / (float)RAND_MAX; }
 
 bool float__eq(float a, float b) { return b - E < a && a < b + E; }
 
-bool float__is_positive(float a) { return !float__eq(a, 0) && -E < a; }
+bool float__is_positive(float a) { return !float__eq(a, 0.0f) && -E < a; }
+
+float float__lerp(float a, float b, float t) { return (1.0f - t) * a + t * b; }
 
 bool Vector2__eq(Vector2 a, Vector2 b) {
   return float__eq(a.x, b.x) && float__eq(a.y, b.y);
@@ -507,6 +513,7 @@ typedef struct {
 
 typedef struct {
   Texture2D border;
+  Texture2D cross[2];
 } HUD;
 
 typedef struct {
@@ -849,6 +856,7 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
                         player_texture.width, player_texture.height},
             100),
         Animation__from_frames(1, &player_texture, 0));
+    self->player->health = PLAYER_MAX_HEALTH;
 
     // Specialization.
     self->player->eye_texture = eye_texture;
@@ -877,8 +885,7 @@ MorteGame MorteGame__initialize() {
   };
 
   game.camera = (Camera2D){0};
-  float window_scale = WINDOW_HEIGHT / LEVEL_HEIGHT;
-  game.camera.zoom = window_scale;
+  game.camera.zoom = WINDOW_SCALE;
   game.view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT};
 
   // ---------------------------------------------------------------------------
@@ -893,7 +900,9 @@ MorteGame MorteGame__initialize() {
 
   MorteGame__spawn_entity(&game, PRIEST);
 
-  game.hud = (HUD){.border = LoadTexture("content/border.png")};
+  game.hud = (HUD){.border = LoadTexture("content/border.png"),
+                   .cross = {LoadTexture("content/cross/vertical.png"),
+                             LoadTexture("content/cross/horizontal.png")}};
 
   Texture2D background0 = LoadTexture("content/tausta/tausta-0.jpg");
   game.backgrounds[0] = (Background){.texture = background0,
@@ -1042,7 +1051,7 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
     case DRAGGED:
       if (entity->hurt_time + ENTITY_INVINCIBILITY_TIME_SECONDS <
           time.elapsed) {
-        entity->health -= 2;
+        entity->health -= GULL_ATTACK_DAMAGE;
         entity->hurt_time = time.elapsed;
       }
       break;
@@ -1124,10 +1133,30 @@ void MorteGame__draw(MorteGame *self, Time time) {
 
   EndMode2D();
 
-  DrawTextureEx(self->hud.border, (Vector2){0}, 0, self->camera.zoom, WHITE);
+  DrawTextureEx(self->hud.border, (Vector2){0}, 0, WINDOW_SCALE, WHITE);
+  const float BORDER_THICKNESS = 13;
+
+  // Visualize decreasing health with a decline in both purity and christianity.
+  float t_health = (float)self->player->health / (float)PLAYER_MAX_HEALTH;
+  Color cross_color = ColorLerp(RED, WHITE, t_health);
+  Vector2 cross_v_pos =
+      (Vector2){BORDER_THICKNESS + self->hud.cross[1].width / 2 -
+                    self->hud.cross[0].width / 2,
+                BORDER_THICKNESS};
+  float decline = float__lerp(self->hud.cross[0].height * 0.7,
+                              self->hud.cross[0].height * 0.3, t_health);
+  Vector2 cross_h_pos =
+      (Vector2){cross_v_pos.x - self->hud.cross[1].width / 2 +
+                    self->hud.cross[0].width / 2,
+                cross_v_pos.y - self->hud.cross[1].height / 2 + decline};
+  // The positions must be scaled for window size.
+  cross_v_pos = Vector2Scale(cross_v_pos, WINDOW_SCALE);
+  cross_h_pos = Vector2Scale(cross_h_pos, WINDOW_SCALE);
+  DrawTextureEx(self->hud.cross[0], cross_v_pos, 0, WINDOW_SCALE, cross_color);
+  DrawTextureEx(self->hud.cross[1], cross_h_pos, 0, WINDOW_SCALE, cross_color);
 
   if (self->debug) {
-    DrawText("DEBUG", 45, 35, 50, GREEN);
+    DrawText("DEBUG", WINDOW_WIDTH / 2 - 84, 35, 50, GREEN);
 
     char fps_text[4] = "NaN\0";
     int fps = 1.0f / time.delta;
@@ -1178,6 +1207,12 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
     if (IsKeyPressed(KEY_N) || IsKeyPressedRepeat(KEY_N)) {
       self->is_paused = false;
       self->debug->pause_game_after_this_frame = true;
+    }
+    if (IsKeyPressed(KEY_MINUS)) { // PLUS.
+      self->camera.zoom += 0.5;
+    }
+    if (IsKeyPressed(KEY_SLASH)) { // MINUS.
+      self->camera.zoom -= 0.5;
     }
 
   } else {
@@ -1250,8 +1285,8 @@ void MorteGame__update(MorteGame *self, Time time) {
     MorteGame__resolve_collision(self, original);
 
     // Because of how collision checking is implemented ((N^2 - N) / 2), the
-    // pair needs to be re-handled "flipped" so that both entities resolve while
-    // being the actor once.
+    // pair needs to be re-handled "flipped" so that both entities resolve
+    // while being the actor once.
     CollisionEvent flipped = original; // Copy fields for editing.
     flipped.actor = original.target;
     flipped.target = original.actor;
