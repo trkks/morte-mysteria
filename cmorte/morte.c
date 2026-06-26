@@ -576,8 +576,6 @@ void MorteGame__free(MorteGame *self) {
   UnloadTexture(self->hud.border);
 
   free(self->collision_events);
-
-  DEBUG__free(self->debug);
 }
 
 void MorteGame__add_animation(MorteGame *self, Animation *animation) {
@@ -866,7 +864,7 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
     break;
   }
 }
-MorteGame MorteGame__initialize() {
+MorteGame MorteGame__initialize(DEBUG *debug_instance) {
   MorteGame game = {
       .is_paused = false,
       .constants = DEFAULT_MORTE_GAME_CONSTANTS,
@@ -881,7 +879,7 @@ MorteGame MorteGame__initialize() {
       .animations = NULL,
       .collision_event_count = 0,
       .collision_events = NULL,
-      .debug = NULL,
+      .debug = debug_instance,
   };
 
   game.camera = (Camera2D){0};
@@ -956,12 +954,10 @@ MorteGame MorteGame__initialize() {
 MorteGame MorteGame__reset(MorteGame *self, DEBUG *debug_instance) {
   if (self != NULL) {
     MorteGame__free(self);
-    *self = MorteGame__initialize();
-    self->debug = debug_instance;
+    *self = MorteGame__initialize(debug_instance);
     return *self;
   } else {
-    MorteGame game = MorteGame__initialize();
-    game.debug = debug_instance;
+    MorteGame game = MorteGame__initialize(debug_instance);
     return game;
   }
 }
@@ -1330,7 +1326,8 @@ int main(void) {
   SetTargetFPS(60);
   DisableCursor();
 
-  // DEBUG
+  // DEBUG is a singleton and thus needs to be separated from game (dependency
+  // injection).
   DEBUG debug_instance = {
       .draw_queue_length = 0,
       .draw_queue = NULL,
@@ -1384,6 +1381,8 @@ int main(void) {
   // ---------------------------------------------------------------------------
   // XXX: NOTE That textures need to be unloaded before closing window.
   MorteGame__free(&game);
+  // De-initialize DEBUG separately just like it was created separately.
+  DEBUG__free(&debug_instance);
 
   CloseWindow();
   // ---------------------------------------------------------------------------
