@@ -528,6 +528,7 @@ const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
 
 typedef struct {
   bool is_paused;
+  bool is_game_over;
   MorteGameConstants constants;
   Vector2 view_size;
   float gravity;
@@ -867,6 +868,7 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
 MorteGame MorteGame__initialize(DEBUG *debug_instance) {
   MorteGame game = {
       .is_paused = false,
+      .is_game_over = false,
       .constants = DEFAULT_MORTE_GAME_CONSTANTS,
       .view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT},
       .gravity = 10.0f,
@@ -1011,6 +1013,10 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
     }
     break;
   case PRIEST:
+    // Game over.
+    if (entity->health <= 0) {
+      self->is_game_over = true;
+    }
     // Movement control.
     Vector2 horizontal = (Vector2){0};
     // Horizontal.
@@ -1134,7 +1140,7 @@ void MorteGame__draw(MorteGame *self, Time time) {
 
   // Visualize decreasing health with a decline in both purity and christianity.
   float t_health = (float)self->player->health / (float)PLAYER_MAX_HEALTH;
-  Color cross_color = ColorLerp(RED, WHITE, t_health);
+  Color cross_color = ColorLerp(GetColor(0x222222FF), RED, t_health);
   Vector2 cross_v_pos =
       (Vector2){BORDER_THICKNESS + self->hud.cross[1].width / 2 -
                     self->hud.cross[0].width / 2,
@@ -1170,12 +1176,21 @@ void MorteGame__draw(MorteGame *self, Time time) {
              font_size, RED);
   }
 
+  if (self->is_game_over) {
+    char *text = "Game Over";
+    int font_size = 50;
+    int text_width = MeasureText(text, font_size);
+    DrawText(text, WINDOW_WIDTH / 2 - text_width / 2, WINDOW_HEIGHT / 2,
+             font_size, RED);
+  }
+
   EndDrawing();
 }
 
 enum GameStatus {
   GAME_DO_RUN,
   GAME_DO_PAUSE,
+  GAME_DO_END,
   GAME_DO_RESET,
   GAME_DO_DEBUG,
 };
@@ -1215,11 +1230,11 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
     self->constants = DEFAULT_MORTE_GAME_CONSTANTS;
   }
 
-  if (IsKeyDown(KEY_LEFT_CONTROL)) {
-    if (IsKeyPressed(KEY_R)) {
-      return GAME_DO_RESET;
-    }
+  if (IsKeyPressed(KEY_R)) {
+    return GAME_DO_RESET;
+  }
 
+  if (IsKeyDown(KEY_LEFT_CONTROL)) {
     if (IsKeyPressed(KEY_D)) {
       return GAME_DO_DEBUG;
     }
@@ -1231,6 +1246,10 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
 
   if (self->is_paused) {
     return GAME_DO_PAUSE;
+  }
+
+  if (self->is_game_over) {
+    return GAME_DO_END;
   }
 
   return GAME_DO_RUN;
@@ -1357,6 +1376,8 @@ int main(void) {
       MorteGame__update(&game, time);
       // Fall to draw.
 
+    case GAME_DO_END:
+      // TODO: Add some game over -animation?
     case GAME_DO_PAUSE:
       // Skip game logic updates.
       MorteGame__draw(&game, time);
