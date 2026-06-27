@@ -1137,14 +1137,15 @@ void MorteGame__draw(MorteGame *self, Time time) {
 
   DrawTextureEx(self->hud.border, (Vector2){0}, 0, WINDOW_SCALE, WHITE);
   const float BORDER_THICKNESS = 13;
+  const float HUD_MARGIN = 5;
 
   // Visualize decreasing health with a decline in both purity and christianity.
   float t_health = (float)self->player->health / (float)PLAYER_MAX_HEALTH;
-  Color cross_color = ColorLerp(GetColor(0x222222FF), RED, t_health);
+  Color cross_color = ColorLerp(GetColor(0x221111FF), RED, t_health);
   Vector2 cross_v_pos =
-      (Vector2){BORDER_THICKNESS + self->hud.cross[1].width / 2 -
+      (Vector2){HUD_MARGIN + BORDER_THICKNESS + self->hud.cross[1].width / 2 -
                     self->hud.cross[0].width / 2,
-                BORDER_THICKNESS};
+                HUD_MARGIN + BORDER_THICKNESS};
   float decline = float__lerp(self->hud.cross[0].height * 0.7,
                               self->hud.cross[0].height * 0.3, t_health);
   Vector2 cross_h_pos =
