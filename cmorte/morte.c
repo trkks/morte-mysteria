@@ -413,9 +413,13 @@ Entity *Entity__new(enum EntityType type, PhysicsBody *body,
 }
 
 typedef struct {
-  Vector2 position;
-  Animation *animation;
-} Cursor;
+  bool move_right;
+  bool move_left;
+  bool jump;
+  bool shoot;
+  // In-world coordinate of where player is aiming at time of shoot.
+  Vector2 cursor_position;
+} UserInput;
 
 typedef struct {
   Vector2 position;
@@ -430,64 +434,6 @@ typedef struct {
 float degrees_between(Vector2 from, Vector2 to) {
   float radians = atan2(to.y - from.y, to.x - from.x);
   return radians * (180.0f / PI);
-}
-
-void Entity__draw_priest_eye(Entity *self, Camera2D camera, Cursor cursor,
-                             bool left_side) {
-  // Eye in own coordinates.
-  Vector2 independent_eye_pos = {self->eye_texture.width / 2,
-                                 self->eye_texture.height / 2};
-  // Eye in Priest coordinates.
-  Vector2 relative_eye_pos = {self->animation->frames[0].width / 2,
-                              self->animation->frames[0].height * 0.06};
-
-  // Eye in world coordinates.
-  Vector2 absolute_eye_pos =
-      Vector2Add(Vector2Add(independent_eye_pos, relative_eye_pos),
-                 (Vector2){self->body->aabb.x, self->body->aabb.y});
-
-  // Translate based on eye's side.
-  if (left_side) {
-    // NOTE: For some reason not translating by whole number makes the eye
-    // shaky...
-    absolute_eye_pos.x -= 11.0f;
-  } else {
-    absolute_eye_pos.x += 1.0f;
-  }
-
-  // Rotate the eyes to look at the cursor.
-  DrawTexturePro(
-      self->eye_texture,
-      (Rectangle){0, 0, self->eye_texture.width, self->eye_texture.height},
-      // Floor()ing prevents jittering when moving the character along.
-      (Rectangle){floor(absolute_eye_pos.x), absolute_eye_pos.y,
-                  self->eye_texture.width, self->eye_texture.height},
-      independent_eye_pos, degrees_between(absolute_eye_pos, cursor.position),
-      WHITE);
-}
-
-void Entity__draw(Entity *self, Camera2D camera, Cursor cursor) {
-  if (self->animation) {
-    DrawTexture(self->animation->frames[self->animation->current_frame],
-                self->body->aabb.x, self->body->aabb.y, self->animation->color);
-  }
-
-  switch (self->type) {
-  case WALL:
-    break;
-  case WACKO:
-    break;
-  case HAND:
-    break;
-  case SNAKE:
-    break;
-  case GULL:
-    break;
-  case PRIEST:
-    Entity__draw_priest_eye(self, camera, cursor, true);
-    Entity__draw_priest_eye(self, camera, cursor, false);
-    break;
-  }
 }
 
 enum EventType {
@@ -532,7 +478,8 @@ typedef struct {
   MorteGameConstants constants;
   Vector2 view_size;
   float gravity;
-  Cursor cursor;
+  UserInput user_input;
+  Animation *cursor_animation;
   Camera2D camera;
   // Convenience handle to the player Entity.
   Entity *player;
@@ -545,6 +492,7 @@ typedef struct {
   size_t collision_event_count;
   CollisionEvent *collision_events;
 
+  // TODO: Just forget this and put it in animations -collection.
   Background backgrounds[3];
   HUD hud;
   DEBUG *debug;
@@ -604,6 +552,16 @@ void MorteGame__add_entity(MorteGame *self, Entity *entity) {
   if (entity->animation) {
     MorteGame__add_animation(self, entity->animation);
   }
+}
+
+void MorteGame__update_user_input(MorteGame *self) {
+  self->user_input = (UserInput){
+      .move_right = IsKeyDown(KEY_D),
+      .move_left = IsKeyDown(KEY_A),
+      .jump = IsKeyDown(KEY_SPACE),
+      .shoot = IsKeyDown(MOUSE_BUTTON_LEFT),
+      .cursor_position = GetScreenToWorld2D(GetMousePosition(), self->camera),
+  };
 }
 
 /* Check for and report collisions between physics bodies preventing.
@@ -865,6 +823,7 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
     break;
   }
 }
+
 MorteGame MorteGame__initialize(DEBUG *debug_instance) {
   MorteGame game = {
       .is_paused = false,
@@ -890,13 +849,11 @@ MorteGame MorteGame__initialize(DEBUG *debug_instance) {
 
   // ---------------------------------------------------------------------------
   // Load (and position static'ish) content.
-  game.cursor = (Cursor){.position = {0, 0},
-                         .animation = Animation__from_path_template(
-                             "content/kursori/kursori00%02d.png",
-                             ANIMATION_FRAME_COUNT_CURSOR,
-                             ANIMATION_LENGTH_MILLIS_CURSOR)};
-  game.cursor.animation->state = LOOPING;
-  MorteGame__add_animation(&game, game.cursor.animation);
+  game.cursor_animation = Animation__from_path_template(
+      "content/kursori/kursori00%02d.png", ANIMATION_FRAME_COUNT_CURSOR,
+      ANIMATION_LENGTH_MILLIS_CURSOR);
+  game.cursor_animation->state = LOOPING;
+  MorteGame__add_animation(&game, game.cursor_animation);
 
   MorteGame__spawn_entity(&game, PRIEST);
 
@@ -1020,9 +977,9 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
     // Movement control.
     Vector2 horizontal = (Vector2){0};
     // Horizontal.
-    if (IsKeyDown(KEY_D)) {
+    if (self->user_input.move_right) {
       horizontal.x = self->constants.player_walk_speed;
-    } else if (IsKeyDown(KEY_A)) {
+    } else if (self->user_input.move_left) {
       horizontal.x = -self->constants.player_walk_speed;
     } else {
       // Stop immediately.
@@ -1031,7 +988,7 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
 
     if (float__eq(self->player->body->velocity.y, 0)) {
       // Jump from the ground into the air.
-      if (IsKeyDown(KEY_SPACE)) {
+      if (self->user_input.jump) {
         entity->body->velocity.y = -self->constants.player_jump_speed;
       }
     } else {
@@ -1069,6 +1026,66 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
   }
 }
 
+void MorteGame__draw_priest_eye(MorteGame *self, Entity *priest,
+                                bool left_side) {
+  // Eye in own coordinates.
+  Vector2 independent_eye_pos = {priest->eye_texture.width / 2,
+                                 priest->eye_texture.height / 2};
+  // Eye in Priest coordinates.
+  Vector2 relative_eye_pos = {priest->animation->frames[0].width / 2,
+                              priest->animation->frames[0].height * 0.06};
+
+  // Eye in world coordinates.
+  Vector2 absolute_eye_pos =
+      Vector2Add(Vector2Add(independent_eye_pos, relative_eye_pos),
+                 (Vector2){priest->body->aabb.x, priest->body->aabb.y});
+
+  // Translate based on eye's side.
+  if (left_side) {
+    // NOTE: For some reason not translating by whole number makes the eye
+    // shaky...
+    absolute_eye_pos.x -= 11.0f;
+  } else {
+    absolute_eye_pos.x += 1.0f;
+  }
+
+  // Rotate the eyes to look at the cursor.
+  DrawTexturePro(
+      priest->eye_texture,
+      (Rectangle){0, 0, priest->eye_texture.width, priest->eye_texture.height},
+      // Floor()ing prevents jittering when moving the character along.
+      (Rectangle){floor(absolute_eye_pos.x), absolute_eye_pos.y,
+                  priest->eye_texture.width, priest->eye_texture.height},
+      independent_eye_pos,
+      degrees_between(absolute_eye_pos, self->user_input.cursor_position),
+      WHITE);
+}
+
+void MorteGame__draw_entity(MorteGame *self, Entity *entity) {
+  if (entity->animation) {
+    DrawTexture(entity->animation->frames[entity->animation->current_frame],
+                entity->body->aabb.x, entity->body->aabb.y,
+                entity->animation->color);
+  }
+
+  switch (entity->type) {
+  case WALL:
+    break;
+  case WACKO:
+    break;
+  case HAND:
+    break;
+  case SNAKE:
+    break;
+  case GULL:
+    break;
+  case PRIEST:
+    MorteGame__draw_priest_eye(self, entity, true);
+    MorteGame__draw_priest_eye(self, entity, false);
+    break;
+  }
+}
+
 void MorteGame__draw(MorteGame *self, Time time) {
   BeginDrawing();
 
@@ -1083,7 +1100,7 @@ void MorteGame__draw(MorteGame *self, Time time) {
 
   for (size_t i = 0; i < self->entity_count; i++) {
     Entity *entity = self->entities[i];
-    Entity__draw(entity, self->camera, self->cursor);
+    MorteGame__draw_entity(self, entity);
 
     if (self->debug) {
       const char *state_text;
@@ -1125,9 +1142,15 @@ void MorteGame__draw(MorteGame *self, Time time) {
   DrawTexture(self->backgrounds[2].texture, self->backgrounds[2].position.x,
               self->backgrounds[2].position.y, WHITE);
 
+  // TODO: Move this to generic (layered/ordered!) animations -collection and
+  // animate everything (including entities) in one common for-loop. NOTE that
+  // should then separate game/physics bodies from skin/animation for getting
+  // the draw-positions (might not always want to perfectly overlap visual with
+  // collision-body).
   DrawTexture(
-      self->cursor.animation->frames[self->cursor.animation->current_frame],
-      self->cursor.position.x, self->cursor.position.y, WHITE);
+      self->cursor_animation->frames[self->cursor_animation->current_frame],
+      self->user_input.cursor_position.x, self->user_input.cursor_position.y,
+      WHITE);
 
   if (self->debug) {
     DEBUG__draw(self->debug);
@@ -1258,6 +1281,8 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
 
 /* Perform game logic updates. */
 void MorteGame__update(MorteGame *self, Time time) {
+  MorteGame__update_user_input(self);
+
   for (size_t i = 0; i < self->entity_count; i++) {
     MorteGame__behave_entity(self, self->entities[i], time);
   }
@@ -1310,8 +1335,6 @@ void MorteGame__update(MorteGame *self, Time time) {
         Vector2Scale(original.collision.direction, -1.0f);
     MorteGame__resolve_collision(self, flipped);
   }
-
-  self->cursor.position = GetScreenToWorld2D(GetMousePosition(), self->camera);
 
   MorteGame__focus_view_on(self, self->player->body->aabb);
 
