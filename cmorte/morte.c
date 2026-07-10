@@ -249,6 +249,7 @@ enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
 enum AnimationTiming { LINEAR, EASE_IN, EASE_OUT };
 
 typedef struct {
+  bool is_mirrored;
   enum AnimationState state;
   size_t frame_count;
   size_t current_frame;
@@ -265,6 +266,7 @@ typedef struct {
 Animation *Animation__from_frames(size_t frame_count, Texture2D *frames,
                                   unsigned length_ms) {
   Animation *self = malloc(sizeof(Animation));
+  self->is_mirrored = false;
   self->state = STOPPED;
   self->frame_count = frame_count;
   self->frames = malloc(frame_count * sizeof(Texture2D));
@@ -449,7 +451,7 @@ typedef struct {
   bool move_right;
   bool move_left;
   bool jump;
-  bool shoot;
+  bool throw_grenade;
   // In-world coordinate of where player is aiming at time of shoot.
   Vector2 cursor_position;
 } UserInput;
@@ -592,8 +594,8 @@ void MorteGame__update_user_input(MorteGame *self) {
   self->user_input = (UserInput){
       .move_right = IsKeyDown(KEY_D),
       .move_left = IsKeyDown(KEY_A),
-      .jump = IsKeyDown(KEY_SPACE),
-      .shoot = IsMouseButtonPressed(MOUSE_BUTTON_LEFT),
+      .jump = IsKeyDown(KEY_W),
+      .throw_grenade = IsKeyPressed(KEY_SPACE),
       .cursor_position = GetScreenToWorld2D(GetMousePosition(), self->camera),
   };
 }
@@ -860,14 +862,25 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
 
   case GRENADE:
     Texture2D grenade_texture = LoadTexture("content/loot/grenade.png");
-    Vector2 offset = {self->player->body->aabb.x + grenade_texture.width + 5,
-                      self->player->body->aabb.y - grenade_texture.height - 5};
+    Vector2 offset = {
+        self->player->body->aabb.x + self->player->body->aabb.width / 2 +
+            (self->player->animation->is_mirrored ? -1.0f : 0.0f) *
+                grenade_texture.width * 2.0f,
+        self->player->body->aabb.y + self->player->body->aabb.height / 2.0f -
+            grenade_texture.height};
     Entity *grenade = Entity__new(
         GRENADE,
         PhysicsBody__new((Rectangle){offset.x, offset.y, grenade_texture.width,
                                      grenade_texture.height},
-                         10),
+                         50),
         Animation__from_frames(1, &grenade_texture, 0));
+
+    // Direct from the side of player character's current orientation.
+    float throw_direction = (self->player->animation->is_mirrored) ? -1 : 1;
+    // Throw.
+    grenade->body->velocity = Vector2Add(
+        self->player->body->velocity, (Vector2){500 * throw_direction, -250});
+
     MorteGame__add_entity(self, grenade);
     break;
   case HAT:
@@ -1041,8 +1054,10 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
     // Horizontal.
     if (self->user_input.move_right) {
       horizontal.x = self->constants.player_walk_speed;
+      entity->animation->is_mirrored = false;
     } else if (self->user_input.move_left) {
       horizontal.x = -self->constants.player_walk_speed;
+      entity->animation->is_mirrored = true;
     } else {
       // Stop immediately.
       horizontal.x = 0;
@@ -1077,7 +1092,7 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
       }
       break;
     case NONE:
-      if (self->user_input.shoot) {
+      if (self->user_input.throw_grenade) {
         MorteGame__spawn_entity(self, GRENADE);
       }
     }
@@ -1106,13 +1121,14 @@ void MorteGame__draw_priest_eye(MorteGame *self, Entity *priest,
       Vector2Add(Vector2Add(independent_eye_pos, relative_eye_pos),
                  (Vector2){priest->body->aabb.x, priest->body->aabb.y});
 
+  float priest_direction = priest->animation->is_mirrored ? 0 : 2;
   // Translate based on eye's side.
   if (left_side) {
     // NOTE: For some reason not translating by whole number makes the eye
     // shaky...
-    absolute_eye_pos.x -= 11.0f;
+    absolute_eye_pos.x += -12.0f + priest_direction;
   } else {
-    absolute_eye_pos.x += 1.0f;
+    absolute_eye_pos.x += 1.0f + priest_direction;
   }
 
   // Rotate the eyes to look at the cursor.
@@ -1129,9 +1145,14 @@ void MorteGame__draw_priest_eye(MorteGame *self, Entity *priest,
 
 void MorteGame__draw_entity(MorteGame *self, Entity *entity) {
   if (entity->animation) {
-    DrawTexture(entity->animation->frames[entity->animation->current_frame],
-                entity->body->aabb.x, entity->body->aabb.y,
-                entity->animation->color);
+    Texture2D frame =
+        entity->animation->frames[entity->animation->current_frame];
+    float frame_direction = entity->animation->is_mirrored ? 1 : -1;
+    DrawTexturePro(
+        frame, (Rectangle){0, 0, frame.width * frame_direction, frame.height},
+        (Rectangle){entity->body->aabb.x, entity->body->aabb.y, frame.width,
+                    frame.height},
+        (Vector2){0}, 0, entity->animation->color);
   }
 
   switch (entity->type) {
