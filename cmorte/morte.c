@@ -349,6 +349,10 @@ enum EntityCategory {
   LOOT = 0xff0000,
 };
 
+// TODO: Set up these int-values so that they could actually be used as bitmasks
+// for tag-based interactions e.g., GULL should hit all PROPS, weapon LOOTS and
+// UGGIES except other GULLS =>
+// gull.collision_mask = PROP | (LOOT & ~(MUSHROOM | WINE)) | (UGGY & ~GULL);
 enum EntityType {
   WALL = PROP,
 
@@ -364,6 +368,35 @@ enum EntityType {
   SAW,
   MUSHROOM,
   WINE,
+};
+
+char *const EntityType__to_string(enum EntityType self) {
+  switch (self) {
+  case WALL:
+    return "Wall";
+  case WACKO:
+    return "Wacko";
+  case HAND:
+    return "Hand";
+  case SNAKE:
+    return "Snake";
+  case GULL:
+    return "Gull";
+  case PRIEST:
+    return "Priest";
+  case GRENADE:
+    return "Grenade";
+  case HAT:
+    return "Hat";
+  case CANNABIS:
+    return "Cannabis";
+  case SAW:
+    return "Saw";
+  case MUSHROOM:
+    return "Mushroom";
+  case WINE:
+    return "Wine";
+  }
 };
 
 enum EntityState {
@@ -555,11 +588,12 @@ void MorteGame__add_entity(MorteGame *self, Entity *entity) {
 }
 
 void MorteGame__update_user_input(MorteGame *self) {
+
   self->user_input = (UserInput){
       .move_right = IsKeyDown(KEY_D),
       .move_left = IsKeyDown(KEY_A),
       .jump = IsKeyDown(KEY_SPACE),
-      .shoot = IsKeyDown(MOUSE_BUTTON_LEFT),
+      .shoot = IsMouseButtonPressed(MOUSE_BUTTON_LEFT),
       .cursor_position = GetScreenToWorld2D(GetMousePosition(), self->camera),
   };
 }
@@ -770,9 +804,11 @@ void MorteGame__focus_view_on(MorteGame *self, Rectangle object) {
 }
 
 void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
+  printf("Spawning entity '%s'\n", EntityType__to_string(type));
   switch (type) {
   case WALL:
     break;
+
   case WACKO:
     break;
   case HAND:
@@ -821,6 +857,29 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
     // Adding to sim.
     MorteGame__add_entity(self, self->player);
     break;
+
+  case GRENADE:
+    Texture2D grenade_texture = LoadTexture("content/loot/grenade.png");
+    Vector2 offset = {self->player->body->aabb.x + grenade_texture.width + 5,
+                      self->player->body->aabb.y - grenade_texture.height - 5};
+    Entity *grenade = Entity__new(
+        GRENADE,
+        PhysicsBody__new((Rectangle){offset.x, offset.y, grenade_texture.width,
+                                     grenade_texture.height},
+                         10),
+        Animation__from_frames(1, &grenade_texture, 0));
+    MorteGame__add_entity(self, grenade);
+    break;
+  case HAT:
+    break;
+  case CANNABIS:
+    break;
+  case SAW:
+    break;
+  case MUSHROOM:
+    break;
+  case WINE:
+    break;
   }
 }
 
@@ -856,6 +915,9 @@ MorteGame MorteGame__initialize(DEBUG *debug_instance) {
   MorteGame__add_animation(&game, game.cursor_animation);
 
   MorteGame__spawn_entity(&game, PRIEST);
+  if (game.debug) {
+    MorteGame__spawn_entity(&game, GULL);
+  }
 
   game.hud = (HUD){.border = LoadTexture("content/border.png"),
                    .cross = {LoadTexture("content/cross/vertical.png"),
@@ -1014,6 +1076,10 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
         entity->hurt_time = time.elapsed;
       }
       break;
+    case NONE:
+      if (self->user_input.shoot) {
+        MorteGame__spawn_entity(self, GRENADE);
+      }
     }
 
     break;
@@ -1219,7 +1285,8 @@ enum GameStatus {
   GAME_DO_DEBUG,
 };
 
-/* User control updates.
+/* User control updates related to game state (i.e., not player character
+ * controls).
  *
  * Returns true if the game loop should continue to the end of this frame and
  * false if not.
