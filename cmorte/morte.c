@@ -28,6 +28,7 @@
 
 #define PLAYER_MAX_HEALTH 100
 #define GULL_ATTACK_DAMAGE 10
+#define GRENADE_LAUNCH_VELOCITY ((Vector2){500, -250})
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
@@ -173,8 +174,13 @@ bool Vector2__eq(Vector2 a, Vector2 b) {
   return float__eq(a.x, b.x) && float__eq(a.y, b.y);
 }
 
-Vector2 Rectangle__center(Rectangle self) {
-  return (Vector2){self.x + self.width / 2.0f, self.y + self.height / 2.0f};
+Vector2 Rectangle__relative_center(Rectangle self) {
+  return (Vector2){self.width / 2.0f, self.height / 2.0f};
+}
+
+Vector2 Rectangle__absolute_center(Rectangle self) {
+  return Vector2Add((Vector2){self.x, self.y},
+                    Rectangle__relative_center(self));
 }
 
 typedef struct {
@@ -423,6 +429,8 @@ typedef struct Entity {
   Texture2D eye_texture;
   // For GULL type.
   struct Entity *drag_target;
+  // For GRENADE type.
+  float rotation;
 } Entity;
 
 Entity *Entity__new(enum EntityType type, PhysicsBody *body,
@@ -444,6 +452,7 @@ Entity *Entity__new(enum EntityType type, PhysicsBody *body,
   self->health = 0;
   self->hurt_time = 0.0;
   self->drag_target = NULL;
+  self->rotation = 0.0f;
   return self;
 }
 
@@ -878,8 +887,10 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
     // Direct from the side of player character's current orientation.
     float throw_direction = (self->player->animation->is_mirrored) ? -1 : 1;
     // Throw.
-    grenade->body->velocity = Vector2Add(
-        self->player->body->velocity, (Vector2){500 * throw_direction, -250});
+    grenade->body->velocity =
+        Vector2Add(self->player->body->velocity,
+                   (Vector2){GRENADE_LAUNCH_VELOCITY.x * throw_direction,
+                             GRENADE_LAUNCH_VELOCITY.y});
 
     MorteGame__add_entity(self, grenade);
     break;
@@ -1022,7 +1033,7 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
         };
 
         // Position the drag target with the grabbing talons.
-        Vector2 actor_center = Rectangle__center(entity->body->aabb);
+        Vector2 actor_center = Rectangle__absolute_center(entity->body->aabb);
         entity->drag_target->body->aabb.x =
             actor_center.x - entity->drag_target->body->aabb.width / 2.1f;
         entity->drag_target->body->aabb.y =
@@ -1034,8 +1045,8 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
     }
     if (entity->body->aabb.y > 30.0f) {
       float floating = fmin(30.0f, fabs(30.0f - entity->body->velocity.x));
-      float homing = Rectangle__center(self->player->body->aabb).x >
-                             Rectangle__center(entity->body->aabb).x
+      float homing = Rectangle__absolute_center(self->player->body->aabb).x >
+                             Rectangle__absolute_center(entity->body->aabb).x
                          ? 1.0f
                          : -1.0f;
       entity->body->impulse = (Vector2){
@@ -1098,6 +1109,11 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
     }
 
     break;
+  case GRENADE:
+    float spin_multiplier = Vector2Length(entity->body->velocity) /
+                            Vector2Length(GRENADE_LAUNCH_VELOCITY);
+    entity->rotation += 10.0f * spin_multiplier;
+    break;
   }
 
   // Consider gravity.
@@ -1148,11 +1164,13 @@ void MorteGame__draw_entity(MorteGame *self, Entity *entity) {
     Texture2D frame =
         entity->animation->frames[entity->animation->current_frame];
     float frame_direction = entity->animation->is_mirrored ? 1 : -1;
+    Vector2 relative_center = Rectangle__relative_center(entity->body->aabb);
     DrawTexturePro(
         frame, (Rectangle){0, 0, frame.width * frame_direction, frame.height},
-        (Rectangle){entity->body->aabb.x, entity->body->aabb.y, frame.width,
+        (Rectangle){entity->body->aabb.x + relative_center.x,
+                    entity->body->aabb.y + relative_center.y, frame.width,
                     frame.height},
-        (Vector2){0}, 0, entity->animation->color);
+        relative_center, entity->rotation, entity->animation->color);
   }
 
   switch (entity->type) {
