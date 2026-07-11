@@ -28,7 +28,6 @@
 
 #define PLAYER_MAX_HEALTH 100
 #define GULL_ATTACK_DAMAGE 10
-#define GRENADE_LAUNCH_VELOCITY ((Vector2){500, -250})
 
 #define ANIMATION_FRAME_COUNT_CURSOR 19
 #define ANIMATION_LENGTH_MILLIS_CURSOR 750
@@ -487,6 +486,19 @@ enum EventType {
   COLLISION_EXIT,
 };
 
+char *const EventType__to_string(enum EventType self) {
+  switch (self) {
+  case NOT_COLLIDING:
+    return "Not Colliding";
+  case COLLISION_ENTER:
+    return "Collision Enter";
+  case COLLIDING:
+    return "Colliding";
+  case COLLISION_EXIT:
+    return "Collision Exit";
+  }
+}
+
 /* Abstraction to help me think about how an actor acts when it collides to
  * a target instead of shuffling both entities' behavior in the same scope.
  */
@@ -509,11 +521,13 @@ typedef struct {
 typedef struct {
   float player_walk_speed;
   float player_jump_speed;
+  Vector2 grenade_launch_velocity;
 } MorteGameConstants;
 
 const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
     .player_walk_speed = 100.0f,
     .player_jump_speed = 350.0f,
+    .grenade_launch_velocity = (Vector2){500, -250},
 };
 
 typedef struct {
@@ -598,6 +612,23 @@ void MorteGame__add_entity(MorteGame *self, Entity *entity) {
   }
 }
 
+void MorteGame__remove_entity(MorteGame *self, Entity *entity) {
+  // Write over the entity without making "holes" in the list, effectively
+  // removing the entity from game.
+
+  /*
+*entity->animation = *self->animations[self->animation_count - 1];
+self->animation_count -= 1;
+*entity->body = *self->physics_bodies[self->physics_body_count - 1];
+self->physics_body_count -= 1;
+*entity = *self->entities[self->entity_count - 1];
+self->entity_count -= 1;
+
+// Mark this pointer to entity as not existing anymore.
+entity = NULL;
+*/
+}
+
 void MorteGame__update_user_input(MorteGame *self) {
 
   self->user_input = (UserInput){
@@ -652,6 +683,8 @@ void MorteGame__collisions(MorteGame *self, Time time) {
         }
       } else if (previous_event.type == COLLIDING ||
                  previous_event.type == COLLISION_ENTER) {
+        // FIXME: For some reason this is set even if no previous enter (Gull <>
+        // Grenade)...
         event.type = COLLISION_EXIT;
       } else {
         event.type = NOT_COLLIDING;
@@ -706,7 +739,13 @@ void MorteGame__resolve_collision_PRIEST(MorteGame *self,
                                          CollisionEvent event) {}
 
 void MorteGame__resolve_collision_GRENADE(MorteGame *self,
-                                          CollisionEvent event) {}
+                                          CollisionEvent event) {
+  puts("foo");
+  if (event.target->category == UGGY && event.target->type != PRIEST) {
+    puts("bar");
+    MorteGame__remove_entity(self, event.target);
+  }
+}
 
 void MorteGame__resolve_collision_HAT(MorteGame *self, CollisionEvent event) {}
 
@@ -722,9 +761,19 @@ void MorteGame__resolve_collision_WINE(MorteGame *self, CollisionEvent event) {}
 
 /* Select the matching method to handle collision for the c.actor. */
 void MorteGame__resolve_collision(MorteGame *self, CollisionEvent event) {
+
+  // Prevent handling any entities removed during resolution processing.
+  if (event.actor == NULL || event.target == NULL) {
+    return;
+  }
+
   if (event.type == NOT_COLLIDING) {
     return;
   }
+
+  printf("%s : %s (%p) <> %s (%p)\n", EventType__to_string(event.type),
+         EntityType__to_string(event.actor->type), event.actor,
+         EntityType__to_string(event.target->type), event.target);
 
   if (event.actor->category == UGGY) {
     switch (event.target->type) {
@@ -887,10 +936,10 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
     // Direct from the side of player character's current orientation.
     float throw_direction = (self->player->animation->is_mirrored) ? -1 : 1;
     // Throw.
-    grenade->body->velocity =
-        Vector2Add(self->player->body->velocity,
-                   (Vector2){GRENADE_LAUNCH_VELOCITY.x * throw_direction,
-                             GRENADE_LAUNCH_VELOCITY.y});
+    grenade->body->velocity = Vector2Add(
+        self->player->body->velocity,
+        (Vector2){self->constants.grenade_launch_velocity.x * throw_direction,
+                  self->constants.grenade_launch_velocity.y});
 
     MorteGame__add_entity(self, grenade);
     break;
@@ -1110,8 +1159,9 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
 
     break;
   case GRENADE:
-    float spin_multiplier = Vector2Length(entity->body->velocity) /
-                            Vector2Length(GRENADE_LAUNCH_VELOCITY);
+    float spin_multiplier =
+        Vector2Length(entity->body->velocity) /
+        Vector2Length(self->constants.grenade_launch_velocity);
     entity->rotation += 10.0f * spin_multiplier;
     break;
   }
@@ -1247,11 +1297,11 @@ void MorteGame__draw(MorteGame *self, Time time) {
   DrawTexture(self->backgrounds[2].texture, self->backgrounds[2].position.x,
               self->backgrounds[2].position.y, WHITE);
 
-  // TODO: Move this to generic (layered/ordered!) animations -collection and
-  // animate everything (including entities) in one common for-loop. NOTE that
-  // should then separate game/physics bodies from skin/animation for getting
-  // the draw-positions (might not always want to perfectly overlap visual with
-  // collision-body).
+  // TODO: Move this to generic (layered/ordered!) animations -collection
+  // and animate everything (including entities) in one common for-loop.
+  // NOTE that should then separate game/physics bodies from skin/animation
+  // for getting the draw-positions (might not always want to perfectly
+  // overlap visual with collision-body).
   DrawTexture(
       self->cursor_animation->frames[self->cursor_animation->current_frame],
       self->user_input.cursor_position.x, self->user_input.cursor_position.y,
@@ -1267,7 +1317,8 @@ void MorteGame__draw(MorteGame *self, Time time) {
   const float BORDER_THICKNESS = 13;
   const float HUD_MARGIN = 5;
 
-  // Visualize decreasing health with a decline in both purity and christianity.
+  // Visualize decreasing health with a decline in both purity and
+  // christianity.
   float t_health = (float)self->player->health / (float)PLAYER_MAX_HEALTH;
   Color cross_color = ColorLerp(GetColor(0x221111FF), RED, t_health);
   Vector2 cross_v_pos =
@@ -1327,8 +1378,8 @@ enum GameStatus {
 /* User control updates related to game state (i.e., not player character
  * controls).
  *
- * Returns true if the game loop should continue to the end of this frame and
- * false if not.
+ * Returns true if the game loop should continue to the end of this frame
+ * and false if not.
  */
 enum GameStatus MorteGame__process_meta_input(MorteGame *self,
                                               DEBUG *debug_instance) {
@@ -1422,9 +1473,10 @@ void MorteGame__update(MorteGame *self, Time time) {
     }
   }
 
-  // Check and resolve collisions in bulk to avoid movement between collisions
-  // (i.e., in the same frame X collides with Y and immediately moves out of
-  // the way, but then Z does not detect collision with the now moved X).
+  // Check and resolve collisions in bulk to avoid movement between
+  // collisions (i.e., in the same frame X collides with Y and immediately
+  // moves out of the way, but then Z does not detect collision with the now
+  // moved X).
   MorteGame__collisions(self, time);
 
   for (size_t i = 0; i < self->collision_event_count; i++) {
@@ -1475,8 +1527,8 @@ int main(void) {
   SetTargetFPS(60);
   DisableCursor();
 
-  // DEBUG is a singleton and thus needs to be separated from game (dependency
-  // injection).
+  // DEBUG is a singleton and thus needs to be separated from game
+  // (dependency injection).
   DEBUG debug_instance = {
       .draw_queue_length = 0,
       .draw_queue = NULL,
