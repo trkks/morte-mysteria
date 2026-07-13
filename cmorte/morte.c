@@ -43,6 +43,8 @@
     array.length += 1;                                                         \
   }
 
+#define POP_T_ARRAY(array) array.data[array.length-- - 1]
+
 #define LAST_T_ARRAY(array) &array.data[array.length - 1]
 
 #define NEW_T_ARRAY(array_type, item_type)                                     \
@@ -593,6 +595,15 @@ typedef struct {
 } EntityArray;
 
 typedef struct {
+  // Amount of items in the array.
+  size_t length;
+  // Amount of space in the array (always greater or equal to length).
+  size_t size;
+  // Pointer to the contained data.
+  CollisionEvent *data;
+} CollisionEventArray;
+
+typedef struct {
   bool is_paused;
   bool is_game_over;
   MorteGameConstants constants;
@@ -607,8 +618,7 @@ typedef struct {
   PhysicsBodyArray physics_bodies;
   EntityArray entities;
   AnimationArray animations;
-  size_t collision_event_count;
-  CollisionEvent *collision_events;
+  CollisionEventArray collision_events;
 
   // TODO: Just forget this and put it in animations -collection.
   Background backgrounds[3];
@@ -634,7 +644,7 @@ void MorteGame__free(MorteGame *self) {
 
   UnloadTexture(self->hud.border);
 
-  free(self->collision_events);
+  free(self->collision_events.data);
 }
 
 Animation *MorteGame__add_animation(MorteGame *self, Animation animation) {
@@ -647,16 +657,6 @@ Animation *MorteGame__add_animation(MorteGame *self, Animation animation) {
 
 PhysicsBody *MorteGame__add_physics_body(MorteGame *self, PhysicsBody body) {
   APPEND_T_ARRAY(self->physics_bodies, PhysicsBody, body);
-
-  // Amount of possible collisions is increased by addition of a new body.
-  size_t max_collisions =
-      ((self->physics_bodies.length *
-        self->physics_bodies.length)  // Full matrix.
-       - self->physics_bodies.length) // Not colliding with self (diagonal).
-      / 2;                            // Process same pair only once.
-
-  self->collision_events =
-      realloc(self->collision_events, max_collisions * sizeof(CollisionEvent));
 
   PhysicsBody *ptr = LAST_T_ARRAY(self->physics_bodies);
   printf("Added PhysicsBody %p\n", ptr);
@@ -680,20 +680,15 @@ Entity *MorteGame__add_entity(MorteGame *self, Entity entity, PhysicsBody body,
 }
 
 void MorteGame__remove_entity(MorteGame *self, Entity *entity) {
-  // Write over the entity without making "holes" in the list, effectively
+  // Write over the entity without making "holes" in the arrays, effectively
   // removing the entity from game.
 
-  /*
-*entity->animation = *self->animations.data[self->animation_count - 1];
-self->animation_count -= 1;
-*entity->body = *self->physics_bodies.data[self->physics_bodies.length - 1];
-self->physics_bodies.length -= 1;
-*entity = *self->entities.data[self->entities.length - 1];
-self->entities.length -= 1;
+  *entity->animation = POP_T_ARRAY(self->animations);
+  *entity->body = POP_T_ARRAY(self->physics_bodies);
+  *entity = POP_T_ARRAY(self->entities);
 
-// Mark this pointer to entity as not existing anymore.
-entity = NULL;
-*/
+  // Mark this pointer to entity as not existing anymore.
+  entity = NULL;
 }
 
 void MorteGame__update_user_input(MorteGame *self) {
@@ -715,14 +710,14 @@ void MorteGame__collisions(MorteGame *self, Time time) {
   // is initialized with previous event value in the first for-loop.
   CollisionEvent matrix[self->entities.length * self->entities.length];
   // Place previous events to their assigned positions.
-  for (size_t i = 0; i < self->collision_event_count; ++i) {
-    CollisionEvent event = self->collision_events[i];
+  for (size_t i = 0; i < self->collision_events.length; ++i) {
+    CollisionEvent event = self->collision_events.data[i];
     matrix[event.actor_handle * self->physics_bodies.length +
            event.target_handle] = event;
   }
 
   // Start collecting the collisions for this update.
-  self->collision_event_count = 0;
+  self->collision_events.length = 0;
   for (size_t i = 0; i < self->entities.length; i++) {
     Entity *a = &self->entities.data[i];
 
@@ -759,8 +754,7 @@ void MorteGame__collisions(MorteGame *self, Time time) {
       }
 
       // Append the new event to the list.
-      self->collision_events[self->collision_event_count] = event;
-      self->collision_event_count++;
+      APPEND_T_ARRAY(self->collision_events, CollisionEvent, event);
 
       if (self->debug) {
         if (collision.happened) {
@@ -1033,8 +1027,7 @@ MorteGame MorteGame__initialize(DEBUG *debug_instance) {
       .animations = NEW_T_ARRAY(AnimationArray, Animation),
       .physics_bodies = NEW_T_ARRAY(PhysicsBodyArray, PhysicsBody),
       .entities = NEW_T_ARRAY(EntityArray, Entity),
-      .collision_event_count = 0,
-      .collision_events = NULL,
+      .collision_events = NEW_T_ARRAY(CollisionEventArray, CollisionEvent),
       .debug = debug_instance,
   };
 
@@ -1551,8 +1544,8 @@ void MorteGame__update(MorteGame *self, Time time) {
   // moved X).
   MorteGame__collisions(self, time);
 
-  for (size_t i = 0; i < self->collision_event_count; i++) {
-    CollisionEvent original = self->collision_events[i];
+  for (size_t i = 0; i < self->collision_events.length; i++) {
+    CollisionEvent original = self->collision_events.data[i];
     MorteGame__resolve_collision(self, original);
 
     // Because of how collision checking is implemented ((N^2 - N) / 2), the
