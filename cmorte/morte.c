@@ -34,10 +34,21 @@
 #define ANIMATION_FRAME_COUNT_GULL 19
 #define ANIMATION_LENGTH_MILLIS_GULL 1000
 
-#define APPEND(list, length, type, item)                                       \
-  list = realloc(list, (length + 1) * sizeof(type));                           \
-  list[length] = item;                                                         \
-  length += 1;
+#define APPEND_T_ARRAY(array, type, item)                                      \
+  {                                                                            \
+    if (array.size <= (array.length + 1)) {                                    \
+      array.data = realloc(array.data, (array.size * 2) * sizeof(type));       \
+    }                                                                          \
+    array.data[array.length] = item;                                           \
+    array.length += 1;                                                         \
+  }
+
+#define LAST_T_ARRAY(array) &array.data[array.length - 1]
+
+#define NEW_T_ARRAY(array_type, item_type)                                     \
+  (array_type) {                                                               \
+    .length = 0, .size = 256, .data = malloc(256 * sizeof(item_type))          \
+  }
 
 // DEBUG
 // -----------------------------------------------------------------------------
@@ -56,13 +67,21 @@ typedef struct {
 } DEBUG_visual;
 
 typedef struct {
-  size_t draw_queue_length;
-  DEBUG_visual *draw_queue;
+  // Amount of items in the array.
+  size_t length;
+  // Amount of space in the array (always greater or equal to length).
+  size_t size;
+  // Pointer to the contained data.
+  DEBUG_visual *data;
+} DEBUG_visualArray;
+
+typedef struct {
+  DEBUG_visualArray draw_queue;
   bool pause_game_after_this_frame;
 } DEBUG;
 
 void DEBUG__enqueue(DEBUG *self, DEBUG_visual object) {
-  APPEND(self->draw_queue, self->draw_queue_length, DEBUG_visual, object);
+  APPEND_T_ARRAY(self->draw_queue, DEBUG_visual, object);
 }
 
 void DEBUG__draw_point_(DEBUG *self, Vector2 pos, Color color) {
@@ -106,8 +125,8 @@ void DEBUG__draw_rectangle(DEBUG *self, Rectangle rec, Color color) {
 }
 
 void DEBUG__draw(DEBUG *self) {
-  for (size_t i = 0; i < self->draw_queue_length; i++) {
-    DEBUG_visual object = self->draw_queue[i];
+  for (size_t i = 0; i < self->draw_queue.length; i++) {
+    DEBUG_visual object = self->draw_queue.data[i];
 
     switch (object.type) {
     case DOT:
@@ -158,7 +177,7 @@ void DEBUG__draw(DEBUG *self) {
   }
 }
 
-void DEBUG__free(DEBUG *self) { free(self->draw_queue); }
+void DEBUG__free(DEBUG *self) { free(self->draw_queue.data); }
 // -----------------------------------------------------------------------------
 
 float frand() { return (float)rand() / (float)RAND_MAX; }
@@ -204,13 +223,13 @@ typedef struct {
   Vector2 direction;
 } Collision;
 
-PhysicsBody *PhysicsBody__new(Rectangle aabb, float mass) {
-  PhysicsBody *self = malloc(sizeof(PhysicsBody));
-  self->aabb = aabb;
-  self->mass = mass;
-  self->inverse_mass = 1.0f / mass;
-  self->velocity = (Vector2){0, 0};
-  self->impulse = (Vector2){0, 0};
+PhysicsBody PhysicsBody__new(Rectangle aabb, float mass) {
+  PhysicsBody self;
+  self.aabb = aabb;
+  self.mass = mass;
+  self.inverse_mass = 1.0f / mass;
+  self.velocity = (Vector2){0, 0};
+  self.impulse = (Vector2){0, 0};
   return self;
 }
 
@@ -249,6 +268,33 @@ Collision PhysicsBody__colliding(PhysicsBody *self, PhysicsBody *other) {
   return collision;
 }
 
+typedef struct {
+  Texture2D *content;
+  size_t frame_count;
+  // Duration of the whole animation in milliseconds.
+  unsigned length_ms;
+} Frames;
+
+/* Load animation frames from a string template filepath using zero-left-padded
+ * indexes [0, `frame_count`).
+ *
+ * NOTE: This method assumes using the `template` will yield constant length
+ * strings (as per the padding condition).
+ *
+ * NOTE: The maximum path length cannot exceed 500 ASCII-characters.
+ */
+Frames Frames__from_path_template(const char *path_template, size_t frame_count,
+                                  unsigned length_ms) {
+  Texture2D *content = malloc(frame_count * sizeof(Texture2D));
+  // Limit path length to 500 characters.
+  char filename[501];
+  for (size_t i = 0; i < frame_count; i++) {
+    sprintf(filename, path_template, (int)i + 1);
+    content[i] = LoadTexture(filename);
+  }
+  return (Frames){content, frame_count, length_ms};
+}
+
 enum AnimationState { STOPPED, PLAYING_ONCE, LOOPING };
 
 enum AnimationTiming { LINEAR, EASE_IN, EASE_OUT };
@@ -256,57 +302,26 @@ enum AnimationTiming { LINEAR, EASE_IN, EASE_OUT };
 typedef struct {
   bool is_mirrored;
   enum AnimationState state;
-  size_t frame_count;
   size_t current_frame;
-  // Duration of the whole animation in milliseconds.
-  unsigned length_ms;
   unsigned elapsed_ms;
   enum AnimationTiming timing;
   Color color;
-  Texture2D *frames;
+  Frames frames;
 } Animation;
 
 /* Copy `frames` for animation.
  */
-Animation *Animation__from_frames(size_t frame_count, Texture2D *frames,
-                                  unsigned length_ms) {
-  Animation *self = malloc(sizeof(Animation));
-  self->is_mirrored = false;
-  self->state = STOPPED;
-  self->frame_count = frame_count;
-  self->frames = malloc(frame_count * sizeof(Texture2D));
-  self->current_frame = 0;
-  self->length_ms = length_ms;
-  self->elapsed_ms = 0;
-  self->timing = LINEAR;
-  self->color = WHITE;
-
-  for (size_t i = 0; i < self->frame_count; i++) {
-    self->frames[i] = frames[i];
-  }
+Animation Animation__from_frames(Frames frames) {
+  Animation self;
+  self.is_mirrored = false;
+  self.state = STOPPED;
+  self.frames = frames;
+  self.current_frame = 0;
+  self.elapsed_ms = 0;
+  self.timing = LINEAR;
+  self.color = WHITE;
 
   return self;
-}
-
-/* Initialize and load animation frames from a string template filepath using
- * zero-left-padded indexes [0, `frame_count`).
- *
- * NOTE: This method assumes using the `template` will yield constant length
- * strings (as per the padding condition).
- *
- * NOTE: The maximum path length cannot exceed 500 ASCII-characters.
- */
-Animation *Animation__from_path_template(const char *template,
-                                         size_t frame_count,
-                                         unsigned length_ms) {
-  Texture2D frames[frame_count];
-  // Limit path length to 500 characters.
-  char filename[501];
-  for (size_t i = 0; i < frame_count; i++) {
-    sprintf(filename, template, (int)i + 1);
-    frames[i] = LoadTexture(filename);
-  }
-  return Animation__from_frames(frame_count, frames, length_ms);
 }
 
 void Animation__update(Animation *self, Time time) {
@@ -315,21 +330,22 @@ void Animation__update(Animation *self, Time time) {
   }
 
   self->elapsed_ms += 1000 * time.delta;
-  float t = fmin(1.0f, (float)self->elapsed_ms / (float)self->length_ms);
+  float t = fmin(1.0f, (float)self->elapsed_ms / (float)self->frames.length_ms);
 
   switch (self->timing) {
   case LINEAR:
-    self->current_frame = t * self->frame_count;
+    self->current_frame = t * self->frames.frame_count;
     break;
   case EASE_IN:
-    self->current_frame = (1.0f - cosf(t * PI / 2.0f)) * self->frame_count;
+    self->current_frame =
+        (1.0f - cosf(t * PI / 2.0f)) * self->frames.frame_count;
     break;
   case EASE_OUT:
-    self->current_frame = sinf(t * PI / 2.0f) * self->frame_count;
+    self->current_frame = sinf(t * PI / 2.0f) * self->frames.frame_count;
     break;
   }
 
-  if (self->current_frame >= self->frame_count) {
+  if (self->current_frame >= self->frames.frame_count) {
     self->current_frame = 0;
     self->elapsed_ms = 0;
 
@@ -339,12 +355,12 @@ void Animation__update(Animation *self, Time time) {
   }
 }
 
-void Animation__free(Animation *self) {
-  for (size_t i = 0; i < self->frame_count; i++) {
-    UnloadTexture(self->frames[i]);
+void Frames__free(Frames self) {
+  for (size_t i = 0; i < self.frame_count; i++) {
+    UnloadTexture(self.content[i]);
   }
 
-  free(self->frames);
+  free(self.content);
 }
 
 /* This enum works as a mask to match into the different categories of
@@ -356,10 +372,10 @@ enum EntityCategory {
   LOOT = 0xff0000,
 };
 
-// TODO: Set up these int-values so that they could actually be used as bitmasks
-// for tag-based interactions e.g., GULL should hit all PROPS, weapon LOOTS and
-// UGGIES except other GULLS =>
-// gull.collision_mask = PROP | (LOOT & ~(MUSHROOM | WINE)) | (UGGY & ~GULL);
+// TODO: Set up these int-values so that they could actually be used as
+// bitmasks for tag-based interactions e.g., GULL should hit all PROPS, weapon
+// LOOTS and UGGIES except other GULLS => gull.collision_mask = PROP | (LOOT &
+// ~(MUSHROOM | WINE)) | (UGGY & ~GULL);
 enum EntityType {
   WALL = PROP,
 
@@ -408,6 +424,8 @@ char *const EntityType__to_string(enum EntityType self) {
 
 enum EntityState {
   NONE = 0,
+  MARKED_FOR_REMOVE, // This state is for managing entity removal, not part of
+                     // the game logic.
   DRAGGING,
   DRAGGED,
 };
@@ -432,26 +450,25 @@ typedef struct Entity {
   float rotation;
 } Entity;
 
-Entity *Entity__new(enum EntityType type, PhysicsBody *body,
-                    Animation *animation) {
-  Entity *self = malloc(sizeof(Entity));
+Entity Entity__new(enum EntityType type) {
+  Entity self;
   if (type < (int)LOOT) {
     if (type < (int)UGGY) {
-      self->category = PROP;
+      self.category = PROP;
     } else {
-      self->category = UGGY;
+      self.category = UGGY;
     }
   } else {
-    self->category = LOOT;
+    self.category = LOOT;
   }
-  self->type = type;
-  self->state = NONE;
-  self->body = body;
-  self->animation = animation;
-  self->health = 0;
-  self->hurt_time = 0.0;
-  self->drag_target = NULL;
-  self->rotation = 0.0f;
+  self.type = type;
+  self.state = NONE;
+  self.body = NULL;
+  self.animation = NULL;
+  self.health = 0;
+  self.hurt_time = 0.0;
+  self.drag_target = NULL;
+  self.rotation = 0.0f;
   return self;
 }
 
@@ -531,22 +548,65 @@ const MorteGameConstants DEFAULT_MORTE_GAME_CONSTANTS = {
 };
 
 typedef struct {
+  Frames cursor_frames;
+  Frames gull_frames;
+  Frames priest_frames;
+  Frames priest_eye_frames;
+  Frames grenade_frames;
+} MorteGameAssets;
+
+// TODO: Simplify this into an enum that indexes to a continuous array of
+// frames' starting points for straightforward cleanup?
+void MorteGameAssets__free(MorteGameAssets self) {
+  Frames__free(self.cursor_frames);
+  Frames__free(self.gull_frames);
+  Frames__free(self.priest_frames);
+  Frames__free(self.priest_eye_frames);
+  Frames__free(self.grenade_frames);
+}
+
+typedef struct {
+  // Amount of items in the array.
+  size_t length;
+  // Amount of space in the array (always greater or equal to length).
+  size_t size;
+  // Pointer to the contained data.
+  Animation *data;
+} AnimationArray;
+
+typedef struct {
+  // Amount of items in the array.
+  size_t length;
+  // Amount of space in the array (always greater or equal to length).
+  size_t size;
+  // Pointer to the contained data.
+  PhysicsBody *data;
+} PhysicsBodyArray;
+
+typedef struct {
+  // Amount of items in the array.
+  size_t length;
+  // Amount of space in the array (always greater or equal to length).
+  size_t size;
+  // Pointer to the contained data.
+  Entity *data;
+} EntityArray;
+
+typedef struct {
   bool is_paused;
   bool is_game_over;
   MorteGameConstants constants;
   Vector2 view_size;
   float gravity;
   UserInput user_input;
+  MorteGameAssets assets;
   Animation *cursor_animation;
   Camera2D camera;
   // Convenience handle to the player Entity.
   Entity *player;
-  size_t animation_count;
-  size_t physics_body_count;
-  size_t entity_count;
-  PhysicsBody **physics_bodies;
-  Entity **entities;
-  Animation **animations;
+  PhysicsBodyArray physics_bodies;
+  EntityArray entities;
+  AnimationArray animations;
   size_t collision_event_count;
   CollisionEvent *collision_events;
 
@@ -557,24 +617,16 @@ typedef struct {
 } MorteGame;
 
 void MorteGame__free(MorteGame *self) {
-  for (size_t i = 0; i < self->animation_count; i++) {
-    Animation__free(self->animations[i]);
-  }
-  free(self->animations);
+  MorteGameAssets__free(self->assets);
 
-  for (size_t i = 0; i < self->physics_body_count; i++) {
-    free(self->physics_bodies[i]);
-  }
-  free(self->physics_bodies);
+  free(self->animations.data);
 
+  free(self->physics_bodies.data);
   // NOTE: Need to destroy this before destroying player along with other
   // entities.
   UnloadTexture(self->player->eye_texture);
 
-  for (size_t i = 0; i < self->entity_count; i++) {
-    free(self->entities[i]);
-  }
-  free(self->entities);
+  free(self->entities.data);
 
   for (size_t i = 0; i < 3; i++) {
     UnloadTexture(self->backgrounds[i].texture);
@@ -585,31 +637,46 @@ void MorteGame__free(MorteGame *self) {
   free(self->collision_events);
 }
 
-void MorteGame__add_animation(MorteGame *self, Animation *animation) {
-  APPEND(self->animations, self->animation_count, Animation *, animation);
+Animation *MorteGame__add_animation(MorteGame *self, Animation animation) {
+  APPEND_T_ARRAY(self->animations, Animation, animation);
+
+  Animation *ptr = LAST_T_ARRAY(self->animations);
+  printf("Added Animation %p\n", ptr);
+  return ptr;
 }
 
-void MorteGame__add_physics_body(MorteGame *self, PhysicsBody *body) {
-  APPEND(self->physics_bodies, self->physics_body_count, PhysicsBody *, body);
+PhysicsBody *MorteGame__add_physics_body(MorteGame *self, PhysicsBody body) {
+  APPEND_T_ARRAY(self->physics_bodies, PhysicsBody, body);
 
   // Amount of possible collisions is increased by addition of a new body.
   size_t max_collisions =
-      ((self->physics_body_count * self->physics_body_count) // Full matrix.
-       - self->physics_body_count) // Not colliding with self (diagonal).
-      / 2;                         // Process same pair only once.
+      ((self->physics_bodies.length *
+        self->physics_bodies.length)  // Full matrix.
+       - self->physics_bodies.length) // Not colliding with self (diagonal).
+      / 2;                            // Process same pair only once.
 
   self->collision_events =
       realloc(self->collision_events, max_collisions * sizeof(CollisionEvent));
+
+  PhysicsBody *ptr = LAST_T_ARRAY(self->physics_bodies);
+  printf("Added PhysicsBody %p\n", ptr);
+  return ptr;
 }
 
-void MorteGame__add_entity(MorteGame *self, Entity *entity) {
-  APPEND(self->entities, self->entity_count, Entity *, entity);
+/* The animation parameter is optional: pass NULL if not desired. */
+Entity *MorteGame__add_entity(MorteGame *self, Entity entity, PhysicsBody body,
+                              Animation *animation) {
+  entity.body = MorteGame__add_physics_body(self, body);
 
-  MorteGame__add_physics_body(self, entity->body);
-
-  if (entity->animation) {
-    MorteGame__add_animation(self, entity->animation);
+  if (animation) {
+    entity.animation = MorteGame__add_animation(self, *animation);
   }
+
+  APPEND_T_ARRAY(self->entities, Entity, entity);
+
+  Entity *ptr = LAST_T_ARRAY(self->entities);
+  printf("Added Entity %p\n", ptr);
+  return ptr;
 }
 
 void MorteGame__remove_entity(MorteGame *self, Entity *entity) {
@@ -617,12 +684,12 @@ void MorteGame__remove_entity(MorteGame *self, Entity *entity) {
   // removing the entity from game.
 
   /*
-*entity->animation = *self->animations[self->animation_count - 1];
+*entity->animation = *self->animations.data[self->animation_count - 1];
 self->animation_count -= 1;
-*entity->body = *self->physics_bodies[self->physics_body_count - 1];
-self->physics_body_count -= 1;
-*entity = *self->entities[self->entity_count - 1];
-self->entity_count -= 1;
+*entity->body = *self->physics_bodies.data[self->physics_bodies.length - 1];
+self->physics_bodies.length -= 1;
+*entity = *self->entities.data[self->entities.length - 1];
+self->entities.length -= 1;
 
 // Mark this pointer to entity as not existing anymore.
 entity = NULL;
@@ -644,23 +711,23 @@ void MorteGame__update_user_input(MorteGame *self) {
  */
 void MorteGame__collisions(MorteGame *self, Time time) {
   // NOTE: Not initializing this seems to make Valgrind generate warning about
-  // accesssing uninitialized value. This is fine, because the accessed index is
-  // initialized with previous event value in the first for-loop.
-  CollisionEvent matrix[self->entity_count * self->entity_count];
+  // accesssing uninitialized value. This is fine, because the accessed index
+  // is initialized with previous event value in the first for-loop.
+  CollisionEvent matrix[self->entities.length * self->entities.length];
   // Place previous events to their assigned positions.
   for (size_t i = 0; i < self->collision_event_count; ++i) {
     CollisionEvent event = self->collision_events[i];
-    matrix[event.actor_handle * self->physics_body_count +
+    matrix[event.actor_handle * self->physics_bodies.length +
            event.target_handle] = event;
   }
 
   // Start collecting the collisions for this update.
   self->collision_event_count = 0;
-  for (size_t i = 0; i < self->entity_count; i++) {
-    Entity *a = self->entities[i];
+  for (size_t i = 0; i < self->entities.length; i++) {
+    Entity *a = &self->entities.data[i];
 
-    for (size_t j = i + 1; j < self->entity_count; j++) {
-      Entity *b = self->entities[j];
+    for (size_t j = i + 1; j < self->entities.length; j++) {
+      Entity *b = &self->entities.data[j];
 
       Collision collision = PhysicsBody__colliding(a->body, b->body);
 
@@ -673,7 +740,8 @@ void MorteGame__collisions(MorteGame *self, Time time) {
                                               .time_stamp = time.elapsed};
 
       // Fill in the .type of the event.
-      CollisionEvent previous_event = matrix[i * self->physics_body_count + j];
+      CollisionEvent previous_event =
+          matrix[i * self->physics_bodies.length + j];
       if (collision.happened) {
         if (previous_event.type == COLLIDING ||
             previous_event.type == COLLISION_ENTER) {
@@ -683,8 +751,8 @@ void MorteGame__collisions(MorteGame *self, Time time) {
         }
       } else if (previous_event.type == COLLIDING ||
                  previous_event.type == COLLISION_ENTER) {
-        // FIXME: For some reason this is set even if no previous enter (Gull <>
-        // Grenade)...
+        // FIXME: For some reason this is set even if no previous enter (Gull
+        // <> Grenade)...
         event.type = COLLISION_EXIT;
       } else {
         event.type = NOT_COLLIDING;
@@ -740,9 +808,7 @@ void MorteGame__resolve_collision_PRIEST(MorteGame *self,
 
 void MorteGame__resolve_collision_GRENADE(MorteGame *self,
                                           CollisionEvent event) {
-  puts("foo");
   if (event.target->category == UGGY && event.target->type != PRIEST) {
-    puts("bar");
     MorteGame__remove_entity(self, event.target);
   }
 }
@@ -876,19 +942,18 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
   case SNAKE:
     break;
   case GULL:
-    Animation *gull_animation = Animation__from_path_template(
-        "content/uggies/gull/lokki%04d.png", ANIMATION_FRAME_COUNT_GULL,
-        ANIMATION_LENGTH_MILLIS_GULL);
-    Entity *gull = Entity__new(
-        GULL,
+    Entity gull = Entity__new(GULL);
+    Animation gull_animation = Animation__from_frames(self->assets.gull_frames);
+    PhysicsBody gull_body =
         PhysicsBody__new((Rectangle){self->player->body->aabb.x + 100,
                                      self->player->body->aabb.y - 100,
-                                     gull_animation->frames[0].width,
-                                     gull_animation->frames[0].height},
-                         20),
-        gull_animation);
-    gull->animation->state = LOOPING;
-    MorteGame__add_entity(self, gull);
+                                     gull_animation.frames.content[0].width,
+                                     gull_animation.frames.content[0].height},
+                         20);
+
+    gull_animation.state = LOOPING;
+
+    MorteGame__add_entity(self, gull, gull_body, &gull_animation);
     break;
   case PRIEST:
     if (self->player != NULL) {
@@ -896,52 +961,53 @@ void MorteGame__spawn_entity(MorteGame *self, enum EntityType type) {
       exit(1);
     }
 
-    // Loading content.
-    Texture2D player_texture = LoadTexture("content/uggies/pappi.png");
-    Texture2D eye_texture = LoadTexture("content/silma.png");
-
     // Initialization.
-    self->player = Entity__new(
-        PRIEST,
-        PhysicsBody__new(
-
-            (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT - player_texture.height,
-                        player_texture.width, player_texture.height},
-            100),
-        Animation__from_frames(1, &player_texture, 0));
-    self->player->health = PLAYER_MAX_HEALTH;
+    Animation player_animation =
+        Animation__from_frames(self->assets.priest_frames);
+    PhysicsBody player_body = PhysicsBody__new(
+        (Rectangle){-LEVEL_WIDTH / 2,
+                    LEVEL_HEIGHT - player_animation.frames.content[0].height,
+                    player_animation.frames.content[0].width,
+                    player_animation.frames.content[0].height},
+        100);
+    Entity player = Entity__new(PRIEST);
 
     // Specialization.
-    self->player->eye_texture = eye_texture;
+    player.health = PLAYER_MAX_HEALTH;
+    // TODO: Make into an animation for blinking eyes?
+    player.eye_texture = *self->assets.priest_eye_frames.content;
 
     // Adding to sim.
-    MorteGame__add_entity(self, self->player);
+    self->player =
+        MorteGame__add_entity(self, player, player_body, &player_animation);
     break;
 
   case GRENADE:
-    Texture2D grenade_texture = LoadTexture("content/loot/grenade.png");
+    Animation grenade_animation =
+        Animation__from_frames(self->assets.grenade_frames);
+
     Vector2 offset = {
         self->player->body->aabb.x + self->player->body->aabb.width / 2 +
             (self->player->animation->is_mirrored ? -1.0f : 0.0f) *
-                grenade_texture.width * 2.0f,
+                grenade_animation.frames.content[0].width * 2.0f,
         self->player->body->aabb.y + self->player->body->aabb.height / 2.0f -
-            grenade_texture.height};
-    Entity *grenade = Entity__new(
-        GRENADE,
-        PhysicsBody__new((Rectangle){offset.x, offset.y, grenade_texture.width,
-                                     grenade_texture.height},
-                         50),
-        Animation__from_frames(1, &grenade_texture, 0));
+            grenade_animation.frames.content[0].height};
+    Entity grenade = Entity__new(GRENADE);
+    PhysicsBody grenade_body = PhysicsBody__new(
+        (Rectangle){offset.x, offset.y,
+                    grenade_animation.frames.content[0].width,
+                    grenade_animation.frames.content[0].height},
+        50);
 
     // Direct from the side of player character's current orientation.
     float throw_direction = (self->player->animation->is_mirrored) ? -1 : 1;
     // Throw.
-    grenade->body->velocity = Vector2Add(
+    grenade_body.velocity = Vector2Add(
         self->player->body->velocity,
         (Vector2){self->constants.grenade_launch_velocity.x * throw_direction,
                   self->constants.grenade_launch_velocity.y});
 
-    MorteGame__add_entity(self, grenade);
+    MorteGame__add_entity(self, grenade, grenade_body, &grenade_animation);
     break;
   case HAT:
     break;
@@ -964,12 +1030,9 @@ MorteGame MorteGame__initialize(DEBUG *debug_instance) {
       .view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT},
       .gravity = 10.0f,
       .player = NULL,
-      .animation_count = 0,
-      .physics_body_count = 0,
-      .entity_count = 0,
-      .physics_bodies = NULL,
-      .entities = NULL,
-      .animations = NULL,
+      .animations = NEW_T_ARRAY(AnimationArray, Animation),
+      .physics_bodies = NEW_T_ARRAY(PhysicsBodyArray, PhysicsBody),
+      .entities = NEW_T_ARRAY(EntityArray, Entity),
       .collision_event_count = 0,
       .collision_events = NULL,
       .debug = debug_instance,
@@ -980,14 +1043,28 @@ MorteGame MorteGame__initialize(DEBUG *debug_instance) {
   game.view_size = (Vector2){WINDOW_WIDTH, WINDOW_HEIGHT};
 
   // ---------------------------------------------------------------------------
-  // Load (and position static'ish) content.
-  game.cursor_animation = Animation__from_path_template(
+  // Load content.
+  game.assets.gull_frames = Frames__from_path_template(
+      "content/uggies/gull/lokki%04d.png", ANIMATION_FRAME_COUNT_GULL,
+      ANIMATION_LENGTH_MILLIS_GULL);
+  game.assets.cursor_frames = Frames__from_path_template(
       "content/kursori/kursori00%02d.png", ANIMATION_FRAME_COUNT_CURSOR,
       ANIMATION_LENGTH_MILLIS_CURSOR);
-  game.cursor_animation->state = LOOPING;
-  MorteGame__add_animation(&game, game.cursor_animation);
+  game.assets.priest_frames =
+      Frames__from_path_template("content/uggies/pappi.png", 1, 0);
+  game.assets.priest_eye_frames =
+      Frames__from_path_template("content/silma.png", 1, 0);
+  game.assets.grenade_frames =
+      Frames__from_path_template("content/loot/grenade.png", 1, 0);
+
+  // Initialize entities.
+  Animation cursor_animation =
+      Animation__from_frames(game.assets.cursor_frames);
+  cursor_animation.state = LOOPING;
+  game.cursor_animation = MorteGame__add_animation(&game, cursor_animation);
 
   MorteGame__spawn_entity(&game, PRIEST);
+
   if (game.debug) {
     MorteGame__spawn_entity(&game, GULL);
   }
@@ -1015,28 +1092,23 @@ MorteGame MorteGame__initialize(DEBUG *debug_instance) {
 
   // Ground.
   MorteGame__add_entity(
-      &game,
-      Entity__new(
-          WALL,
-          PhysicsBody__new(
-              (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT, LEVEL_WIDTH, 50}, 0),
-          NULL));
+      &game, Entity__new(WALL),
+      PhysicsBody__new(
+          (Rectangle){-LEVEL_WIDTH / 2, LEVEL_HEIGHT, LEVEL_WIDTH, 50}, 0),
+      NULL);
 
   // Left wall.
   MorteGame__add_entity(
-      &game, Entity__new(WALL,
-                         PhysicsBody__new((Rectangle){-LEVEL_WIDTH / 2 - 50, 0,
-                                                      50, LEVEL_HEIGHT},
-                                          0),
-                         NULL));
+      &game, Entity__new(WALL),
+      PhysicsBody__new((Rectangle){-LEVEL_WIDTH / 2 - 50, 0, 50, LEVEL_HEIGHT},
+                       0),
+      NULL);
 
   // Right wall.
   MorteGame__add_entity(
-      &game,
-      Entity__new(WALL,
-                  PhysicsBody__new(
-                      (Rectangle){LEVEL_WIDTH / 2, 0, 50, LEVEL_HEIGHT}, 0),
-                  NULL));
+      &game, Entity__new(WALL),
+      PhysicsBody__new((Rectangle){LEVEL_WIDTH / 2, 0, 50, LEVEL_HEIGHT}, 0),
+      NULL);
 
   game.gravity = 10.0f;
   // ---------------------------------------------------------------------------
@@ -1173,21 +1245,22 @@ void MorteGame__behave_entity(MorteGame *self, Entity *entity, Time time) {
   }
 }
 
-void MorteGame__draw_priest_eye(MorteGame *self, Entity *priest,
+void MorteGame__draw_priest_eye(MorteGame *self, Entity priest,
                                 bool left_side) {
   // Eye in own coordinates.
-  Vector2 independent_eye_pos = {priest->eye_texture.width / 2,
-                                 priest->eye_texture.height / 2};
+  Vector2 independent_eye_pos = {priest.eye_texture.width / 2,
+                                 priest.eye_texture.height / 2};
   // Eye in Priest coordinates.
-  Vector2 relative_eye_pos = {priest->animation->frames[0].width / 2,
-                              priest->animation->frames[0].height * 0.06};
+  Vector2 relative_eye_pos = {priest.animation->frames.content[0].width / 2,
+                              priest.animation->frames.content[0].height *
+                                  0.06};
 
   // Eye in world coordinates.
   Vector2 absolute_eye_pos =
       Vector2Add(Vector2Add(independent_eye_pos, relative_eye_pos),
-                 (Vector2){priest->body->aabb.x, priest->body->aabb.y});
+                 (Vector2){priest.body->aabb.x, priest.body->aabb.y});
 
-  float priest_direction = priest->animation->is_mirrored ? 0 : 2;
+  float priest_direction = priest.animation->is_mirrored ? 0 : 2;
   // Translate based on eye's side.
   if (left_side) {
     // NOTE: For some reason not translating by whole number makes the eye
@@ -1199,31 +1272,31 @@ void MorteGame__draw_priest_eye(MorteGame *self, Entity *priest,
 
   // Rotate the eyes to look at the cursor.
   DrawTexturePro(
-      priest->eye_texture,
-      (Rectangle){0, 0, priest->eye_texture.width, priest->eye_texture.height},
+      priest.eye_texture,
+      (Rectangle){0, 0, priest.eye_texture.width, priest.eye_texture.height},
       // Floor()ing prevents jittering when moving the character along.
       (Rectangle){floor(absolute_eye_pos.x), absolute_eye_pos.y,
-                  priest->eye_texture.width, priest->eye_texture.height},
+                  priest.eye_texture.width, priest.eye_texture.height},
       independent_eye_pos,
       degrees_between(absolute_eye_pos, self->user_input.cursor_position),
       WHITE);
 }
 
-void MorteGame__draw_entity(MorteGame *self, Entity *entity) {
-  if (entity->animation) {
+void MorteGame__draw_entity(MorteGame *self, Entity entity) {
+  if (entity.animation) {
     Texture2D frame =
-        entity->animation->frames[entity->animation->current_frame];
-    float frame_direction = entity->animation->is_mirrored ? 1 : -1;
-    Vector2 relative_center = Rectangle__relative_center(entity->body->aabb);
+        entity.animation->frames.content[entity.animation->current_frame];
+    float frame_direction = entity.animation->is_mirrored ? 1 : -1;
+    Vector2 relative_center = Rectangle__relative_center(entity.body->aabb);
     DrawTexturePro(
         frame, (Rectangle){0, 0, frame.width * frame_direction, frame.height},
-        (Rectangle){entity->body->aabb.x + relative_center.x,
-                    entity->body->aabb.y + relative_center.y, frame.width,
+        (Rectangle){entity.body->aabb.x + relative_center.x,
+                    entity.body->aabb.y + relative_center.y, frame.width,
                     frame.height},
-        relative_center, entity->rotation, entity->animation->color);
+        relative_center, entity.rotation, entity.animation->color);
   }
 
-  switch (entity->type) {
+  switch (entity.type) {
   case WALL:
     break;
   case WACKO:
@@ -1253,13 +1326,13 @@ void MorteGame__draw(MorteGame *self, Time time) {
                 self->backgrounds[i].position.y, WHITE);
   }
 
-  for (size_t i = 0; i < self->entity_count; i++) {
-    Entity *entity = self->entities[i];
+  for (size_t i = 0; i < self->entities.length; i++) {
+    Entity entity = self->entities.data[i];
     MorteGame__draw_entity(self, entity);
 
     if (self->debug) {
       const char *state_text;
-      switch (entity->state) {
+      switch (entity.state) {
       case NONE:
         state_text = "None";
         break;
@@ -1273,24 +1346,23 @@ void MorteGame__draw(MorteGame *self, Time time) {
         state_text = "UNDEFINED";
         break;
       }
-      DrawText(state_text, entity->body->aabb.x + entity->body->aabb.width + 10,
-               entity->body->aabb.y, 10, WHITE);
+      DrawText(state_text, entity.body->aabb.x + entity.body->aabb.width + 10,
+               entity.body->aabb.y, 10, WHITE);
 
       char health_text[0 + 8] = "-0000\0";
-      sprintf(health_text, "%d", (int)entity->health);
-      DrawText(health_text,
-               entity->body->aabb.x + entity->body->aabb.width + 10,
-               entity->body->aabb.y + 12, 10, GREEN);
+      sprintf(health_text, "%d", (int)entity.health);
+      DrawText(health_text, entity.body->aabb.x + entity.body->aabb.width + 10,
+               entity.body->aabb.y + 12, 10, GREEN);
 
       char position_text[3 + 8] = "x: -0000\0";
-      sprintf(position_text, "x: %d", (int)entity->body->aabb.x);
+      sprintf(position_text, "x: %d", (int)entity.body->aabb.x);
       DrawText(position_text,
-               entity->body->aabb.x + entity->body->aabb.width + 10,
-               entity->body->aabb.y + 24, 10, WHITE);
-      sprintf(position_text, "y: %d", (int)entity->body->aabb.y);
+               entity.body->aabb.x + entity.body->aabb.width + 10,
+               entity.body->aabb.y + 24, 10, WHITE);
+      sprintf(position_text, "y: %d", (int)entity.body->aabb.y);
       DrawText(position_text,
-               entity->body->aabb.x + entity->body->aabb.width + 10,
-               entity->body->aabb.y + 36, 10, WHITE);
+               entity.body->aabb.x + entity.body->aabb.width + 10,
+               entity.body->aabb.y + 36, 10, WHITE);
     }
   }
 
@@ -1302,10 +1374,10 @@ void MorteGame__draw(MorteGame *self, Time time) {
   // NOTE that should then separate game/physics bodies from skin/animation
   // for getting the draw-positions (might not always want to perfectly
   // overlap visual with collision-body).
-  DrawTexture(
-      self->cursor_animation->frames[self->cursor_animation->current_frame],
-      self->user_input.cursor_position.x, self->user_input.cursor_position.y,
-      WHITE);
+  DrawTexture(self->cursor_animation->frames
+                  .content[self->cursor_animation->current_frame],
+              self->user_input.cursor_position.x,
+              self->user_input.cursor_position.y, WHITE);
 
   if (self->debug) {
     DEBUG__draw(self->debug);
@@ -1440,13 +1512,13 @@ enum GameStatus MorteGame__process_meta_input(MorteGame *self,
 void MorteGame__update(MorteGame *self, Time time) {
   MorteGame__update_user_input(self);
 
-  for (size_t i = 0; i < self->entity_count; i++) {
-    MorteGame__behave_entity(self, self->entities[i], time);
+  for (size_t i = 0; i < self->entities.length; i++) {
+    MorteGame__behave_entity(self, &self->entities.data[i], time);
   }
 
   // Integrate movement.
-  for (size_t i = 0; i < self->physics_body_count; i++) {
-    PhysicsBody *body = self->physics_bodies[i];
+  for (size_t i = 0; i < self->physics_bodies.length; i++) {
+    PhysicsBody *body = &self->physics_bodies.data[i];
 
     // Semi-implicit Euler integration (velocity _before_ position).
     body->velocity.x += body->impulse.x * time.delta;
@@ -1515,8 +1587,8 @@ void MorteGame__update(MorteGame *self, Time time) {
               * -1.0f;
   }
 
-  for (int i = 0; i < self->animation_count; i++) {
-    Animation__update(self->animations[i], time);
+  for (int i = 0; i < self->animations.length; i++) {
+    Animation__update(&self->animations.data[i], time);
   }
 }
 
@@ -1530,8 +1602,7 @@ int main(void) {
   // DEBUG is a singleton and thus needs to be separated from game
   // (dependency injection).
   DEBUG debug_instance = {
-      .draw_queue_length = 0,
-      .draw_queue = NULL,
+      .draw_queue = NEW_T_ARRAY(DEBUG_visualArray, DEBUG_visual),
       .pause_game_after_this_frame = false,
   };
 
@@ -1552,7 +1623,7 @@ int main(void) {
     case GAME_DO_RUN:
       // Refresh debug drawing ready for this next frame frame.
       if (game.debug) {
-        game.debug->draw_queue_length = 0;
+        game.debug->draw_queue.length = 0;
       }
 
       MorteGame__update(&game, time);
