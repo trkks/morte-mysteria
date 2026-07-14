@@ -34,6 +34,16 @@
 #define ANIMATION_FRAME_COUNT_GULL 19
 #define ANIMATION_LENGTH_MILLIS_GULL 1000
 
+#define NEW_T_ARRAY(array_type, item_type)                                     \
+  (array_type) {                                                               \
+    .length = 0, .size = 256, .data = malloc(256 * sizeof(item_type))          \
+  }
+
+#define WITH_SIZE_T_ARRAY(array_type, item_type, size_)                        \
+  (array_type) {                                                               \
+    .length = 0, .size = size_, .data = malloc(size_ * sizeof(item_type))      \
+  }
+
 #define APPEND_T_ARRAY(array, type, item)                                      \
   {                                                                            \
     if (array.size <= (array.length + 1)) {                                    \
@@ -43,13 +53,12 @@
     array.length += 1;                                                         \
   }
 
-#define POP_T_ARRAY(array) array.data[array.length-- - 1]
-
 #define LAST_T_ARRAY(array) &array.data[array.length - 1]
 
-#define NEW_T_ARRAY(array_type, item_type)                                     \
-  (array_type) {                                                               \
-    .length = 0, .size = 256, .data = malloc(256 * sizeof(item_type))          \
+#define RESIZE_T_ARRAY(array, new_size, item_type)                             \
+  {                                                                            \
+    array.data = realloc(array.data, new_size * sizeof(item_type));            \
+    array.size = new_size;                                                     \
   }
 
 // DEBUG
@@ -426,8 +435,6 @@ char *const EntityType__to_string(enum EntityType self) {
 
 enum EntityState {
   NONE = 0,
-  MARKED_FOR_REMOVE, // This state is for managing entity removal, not part of
-                     // the game logic.
   DRAGGING,
   DRAGGED,
 };
@@ -498,14 +505,14 @@ float degrees_between(Vector2 from, Vector2 to) {
   return radians * (180.0f / PI);
 }
 
-enum EventType {
+enum CollisionEventType {
   NOT_COLLIDING,
   COLLISION_ENTER,
   COLLIDING,
   COLLISION_EXIT,
 };
 
-char *const EventType__to_string(enum EventType self) {
+char *const CollisionEventType__to_string(enum CollisionEventType self) {
   switch (self) {
   case NOT_COLLIDING:
     return "Not Colliding";
@@ -522,14 +529,14 @@ char *const EventType__to_string(enum EventType self) {
  * a target instead of shuffling both entities' behavior in the same scope.
  */
 typedef struct {
+  enum CollisionEventType type;
+  // Elapsed game time in seconds at the time of the event.
+  double time_stamp;
+  Collision collision;
   size_t actor_handle;
   size_t target_handle;
   Entity *actor;
   Entity *target;
-  Collision collision;
-  enum EventType type;
-  // Elapsed game time in seconds at the time of the event.
-  double time_stamp;
 } CollisionEvent;
 
 typedef struct {
@@ -618,7 +625,7 @@ typedef struct {
   PhysicsBodyArray physics_bodies;
   EntityArray entities;
   AnimationArray animations;
-  CollisionEventArray collision_events;
+  CollisionEventArray collision_history;
 
   // TODO: Just forget this and put it in animations -collection.
   Background backgrounds[3];
@@ -644,7 +651,7 @@ void MorteGame__free(MorteGame *self) {
 
   UnloadTexture(self->hud.border);
 
-  free(self->collision_events.data);
+  free(self->collision_history.data);
 }
 
 Animation *MorteGame__add_animation(MorteGame *self, Animation animation) {
@@ -673,26 +680,38 @@ Entity *MorteGame__add_entity(MorteGame *self, Entity entity, PhysicsBody body,
   }
 
   APPEND_T_ARRAY(self->entities, Entity, entity);
+  if (self->entities.size * self->entities.size >
+      self->collision_history.size) {
+    size_t old_size = self->collision_history.size;
+    // The history must be made to fit all possible entity pairings.
+    RESIZE_T_ARRAY(self->collision_history,
+                   self->entities.size * self->entities.size, CollisionEvent);
+    printf("Resized collision history %ld -> %ld\n", old_size,
+           self->collision_history.size);
+  }
 
   Entity *ptr = LAST_T_ARRAY(self->entities);
   printf("Added Entity %p\n", ptr);
   return ptr;
 }
 
-void MorteGame__remove_entity(MorteGame *self, Entity *entity) {
-  // Write over the entity without making "holes" in the arrays, effectively
-  // removing the entity from game.
+void MorteGame__remove_entity(MorteGame *self, size_t entity_idx) {
+  // Write over the entity data in collections effectively removing it from sim.
+  if (self->entities.length > 1) {
+    self->entities.data[entity_idx] = *LAST_T_ARRAY(self->entities);
+  }
 
-  *entity->animation = POP_T_ARRAY(self->animations);
-  *entity->body = POP_T_ARRAY(self->physics_bodies);
-  *entity = POP_T_ARRAY(self->entities);
+  // Erase from collision history the events that _removed entity_ was part of
+  // and update the events that _replacing entity_ is part of.
+  // TODO
 
-  // Mark this pointer to entity as not existing anymore.
-  entity = NULL;
+  // Finalize swapping the one item from tail.
+  self->entities.length -= 1;
+
+  printf("Removed Entity %p\n", &self->entities.data[entity_idx]);
 }
 
 void MorteGame__update_user_input(MorteGame *self) {
-
   self->user_input = (UserInput){
       .move_right = IsKeyDown(KEY_D),
       .move_left = IsKeyDown(KEY_A),
@@ -705,19 +724,9 @@ void MorteGame__update_user_input(MorteGame *self) {
 /* Check for and report collisions between physics bodies preventing.
  */
 void MorteGame__collisions(MorteGame *self, Time time) {
-  // NOTE: Not initializing this seems to make Valgrind generate warning about
-  // accesssing uninitialized value. This is fine, because the accessed index
-  // is initialized with previous event value in the first for-loop.
-  CollisionEvent matrix[self->entities.length * self->entities.length];
-  // Place previous events to their assigned positions.
-  for (size_t i = 0; i < self->collision_events.length; ++i) {
-    CollisionEvent event = self->collision_events.data[i];
-    matrix[event.actor_handle * self->physics_bodies.length +
-           event.target_handle] = event;
-  }
-
   // Start collecting the collisions for this update.
-  self->collision_events.length = 0;
+  self->collision_history.length = 0;
+
   for (size_t i = 0; i < self->entities.length; i++) {
     Entity *a = &self->entities.data[i];
 
@@ -726,7 +735,7 @@ void MorteGame__collisions(MorteGame *self, Time time) {
 
       Collision collision = PhysicsBody__colliding(a->body, b->body);
 
-      // NOTE: Not initializing .type field here.
+      // NOTE: Not initializing .type field here...
       CollisionEvent event = (CollisionEvent){.actor_handle = i,
                                               .target_handle = j,
                                               .actor = a,
@@ -734,18 +743,18 @@ void MorteGame__collisions(MorteGame *self, Time time) {
                                               .collision = collision,
                                               .time_stamp = time.elapsed};
 
-      // Fill in the .type of the event.
-      CollisionEvent previous_event =
-          matrix[i * self->physics_bodies.length + j];
+      enum CollisionEventType previous_event_type =
+          self->collision_history.data[i + j].type;
+      // ...but here.
       if (collision.happened) {
-        if (previous_event.type == COLLIDING ||
-            previous_event.type == COLLISION_ENTER) {
+        if (previous_event_type == COLLIDING ||
+            previous_event_type == COLLISION_ENTER) {
           event.type = COLLIDING;
         } else {
           event.type = COLLISION_ENTER;
         }
-      } else if (previous_event.type == COLLIDING ||
-                 previous_event.type == COLLISION_ENTER) {
+      } else if (previous_event_type == COLLIDING ||
+                 previous_event_type == COLLISION_ENTER) {
         // FIXME: For some reason this is set even if no previous enter (Gull
         // <> Grenade)...
         event.type = COLLISION_EXIT;
@@ -753,8 +762,17 @@ void MorteGame__collisions(MorteGame *self, Time time) {
         event.type = NOT_COLLIDING;
       }
 
-      // Append the new event to the list.
-      APPEND_T_ARRAY(self->collision_events, CollisionEvent, event);
+      // Append the new event to the list (a diagonal matrix). NOTE that this
+      // keeps the events related to any entity idx re-discoverable: find "row"
+      // of entity, and iterate from entity idx + 1 until the end.
+      // E.g., find events related to entity 3:
+      //   1 2 3 4 5        1. Entity 3 is associated with events B, E, H, I
+      // 1[  A B C D]       2. Get to the column indexing matrix indexes 1 and 4
+      // 2[    E F G]       3. Compute indexes (5-1)-3=1 and ((5-1)+(5-2))-3=4
+      // 3[      H I]       4. Get to the row indexing matrix indexes 7 and 8
+      // 4[        J]       5. Compute starting index (5-1)+(5-2)=4+3=7
+      // 5[         ]       6. Robert is your parent's brother.
+      APPEND_T_ARRAY(self->collision_history, CollisionEvent, event);
 
       if (self->debug) {
         if (collision.happened) {
@@ -803,7 +821,7 @@ void MorteGame__resolve_collision_PRIEST(MorteGame *self,
 void MorteGame__resolve_collision_GRENADE(MorteGame *self,
                                           CollisionEvent event) {
   if (event.target->category == UGGY && event.target->type != PRIEST) {
-    MorteGame__remove_entity(self, event.target);
+    MorteGame__remove_entity(self, event.target_handle);
   }
 }
 
@@ -821,17 +839,11 @@ void MorteGame__resolve_collision_WINE(MorteGame *self, CollisionEvent event) {}
 
 /* Select the matching method to handle collision for the c.actor. */
 void MorteGame__resolve_collision(MorteGame *self, CollisionEvent event) {
-
-  // Prevent handling any entities removed during resolution processing.
-  if (event.actor == NULL || event.target == NULL) {
-    return;
-  }
-
   if (event.type == NOT_COLLIDING) {
     return;
   }
 
-  printf("%s : %s (%p) <> %s (%p)\n", EventType__to_string(event.type),
+  printf("%s : %s (%p) <> %s (%p)\n", CollisionEventType__to_string(event.type),
          EntityType__to_string(event.actor->type), event.actor,
          EntityType__to_string(event.target->type), event.target);
 
@@ -1027,7 +1039,8 @@ MorteGame MorteGame__initialize(DEBUG *debug_instance) {
       .animations = NEW_T_ARRAY(AnimationArray, Animation),
       .physics_bodies = NEW_T_ARRAY(PhysicsBodyArray, PhysicsBody),
       .entities = NEW_T_ARRAY(EntityArray, Entity),
-      .collision_events = NEW_T_ARRAY(CollisionEventArray, CollisionEvent),
+      .collision_history =
+          WITH_SIZE_T_ARRAY(CollisionEventArray, CollisionEvent, 256 * 256),
       .debug = debug_instance,
   };
 
@@ -1544,8 +1557,8 @@ void MorteGame__update(MorteGame *self, Time time) {
   // moved X).
   MorteGame__collisions(self, time);
 
-  for (size_t i = 0; i < self->collision_events.length; i++) {
-    CollisionEvent original = self->collision_events.data[i];
+  for (size_t i = 0; i < self->collision_history.length; i++) {
+    CollisionEvent original = self->collision_history.data[i];
     MorteGame__resolve_collision(self, original);
 
     // Because of how collision checking is implemented ((N^2 - N) / 2), the
