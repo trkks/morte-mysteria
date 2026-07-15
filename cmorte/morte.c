@@ -700,6 +700,32 @@ void MorteGame__remove_entity(MorteGame *self, size_t entity_idx) {
   if (self->entities.length > 1) {
     self->entities.data[entity_idx] = *LAST_T_ARRAY(self->entities);
   }
+  CollisionEventArray replacing_events =
+      NEW_T_ARRAY(CollisionEventArray, CollisionEvent);
+  // Events from column.
+  size_t i, k;
+  for (i = 1, k = self->entities.length - 1; i < self->entities.length;
+       i += k, k--) {
+    APPEND_T_ARRAY(replacing_events, CollisionEvent,
+                   self->collision_history.data[i]);
+  }
+
+  // Events from row.
+  for (size_t j = i + k; j < self->entities.length; j++) {
+    APPEND_T_ARRAY(replacing_events, CollisionEvent,
+                   self->collision_history.data[j]);
+  }
+
+  // Events into column.
+  size_t l = 0;
+  for (i = 1, k = self->entities.length - 1; i < entity_idx; i += k, k--) {
+    self->collision_history.data[i] = replacing_events.data[l++];
+  }
+
+  // Events into row.
+  for (size_t j = i + k; j < self->entities.length; j++) {
+    self->collision_history.data[j] = replacing_events.data[l++];
+  }
 
   // Erase from collision history the events that _removed entity_ was part of
   // and update the events that _replacing entity_ is part of.
